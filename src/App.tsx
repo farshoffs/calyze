@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import TradingChart from "./components/TradingChart";
+import InstrumentDetails from "./components/InstrumentDetails";
 import { parseCtraderCsv } from "./lib/csv";
 import { aggregateCandles, upperBoundTime, TIMEFRAME_SECONDS } from "./lib/timeframes";
 import {
@@ -9,10 +10,12 @@ import {
   initialAccount,
   metrics,
   openPosition,
-  positionRawPnl
+  positionRawPnl,
+  quote
 } from "./lib/account";
 import { downloadCsvArchive, listCloudDatasets, saveCsvArchive, type CloudDataset } from "./lib/cloud";
 import { supabase, supabaseConfigured } from "./lib/supabase";
+import { DEFAULT_INSTRUMENT, instrumentFromImport, USOIL_S } from "./lib/instruments";
 import type {
   AccountConfig,
   Candle,
@@ -31,16 +34,7 @@ const defaultAccount: AccountConfig = {
   stopOutLevel: 50
 };
 
-const defaultInstrument: InstrumentSpec = {
-  symbol: "XAUUSD",
-  contractSize: 100,
-  tickSize: 0.01,
-  spread: 0.2,
-  commissionPerLotRoundTurn: 7,
-  minLot: 0.01,
-  maxLot: 100,
-  lotStep: 0.01
-};
+const defaultInstrument: InstrumentSpec = DEFAULT_INSTRUMENT;
 
 const money = (value: number) =>
   new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -171,9 +165,11 @@ export default function App() {
       setDatasetName(file.name.replace(/\.csv$/i, ""));
       setReplayIndex(start);
       setAccount(initialAccount(accountConfig));
-      if (/WTI|USOIL/i.test(file.name)) {
-        setInstrument((previous) => ({ ...previous, symbol: "WTI" }));
-      }
+      const spec = instrumentFromImport(file.name);
+      setInstrument(spec);
+      setLots(spec.minLot);
+      setStopLoss("");
+      setTakeProfit("");
       savedFileRef.current = autoArchive ? null : file;
       setPendingFile(autoArchive ? file : null);
       if (autoArchive) {
@@ -320,7 +316,19 @@ export default function App() {
       });
       await onImport(file, false);
       setDatasetName(dataset.name);
-      setInstrument(dataset.instrument);
+      const preset = instrumentFromImport(dataset.original_file_name || dataset.name, dataset.symbol);
+      // Older WTI cloud archives may contain the old generic XAU settings.
+      // Always restore the broker's non-negotiable USOIL.S volume/tick properties.
+      const spec = preset.symbol === "USOIL.S" ? {
+        ...USOIL_S,
+        ...(dataset.instrument?.symbol === "USOIL.S"
+          ? { spread: dataset.instrument.spread, commissionPerLotRoundTurn: dataset.instrument.commissionPerLotRoundTurn,
+              serverUtcOffsetHours: dataset.instrument.serverUtcOffsetHours,
+              swapRolloverUtcHour: dataset.instrument.swapRolloverUtcHour }
+          : {})
+      } : (dataset.instrument ?? preset);
+      setInstrument(spec);
+      setLots(spec.minLot);
       setCloudProgress("Restored " + dataset.name + " from Supabase.");
     } catch (error) {
       setCloudProgress("Failed to open cloud dataset: " +
@@ -333,8 +341,17 @@ export default function App() {
   const updateAccount = (key: keyof AccountConfig, value: string) =>
     setAccountConfig((prev) => ({ ...prev, [key]: key === "currency" ? value : Number(value) }));
 
-  const updateInstrument = (key: keyof InstrumentSpec, value: string) =>
-    setInstrument((prev) => ({ ...prev, [key]: key === "symbol" ? value : Number(value) }));
+  const updateInstrument = (key: keyof InstrumentSpec, value: string) => {
+    if (account.positions.length) {
+      setStatus("Close all trades before changing instrument contract or execution assumptions.");
+      return;
+    }
+    setInstrument((prev) => ({
+      ...prev,
+      [key]: key === "symbol" ? value
+        : key === "serverUtcOffsetHours" && value === "" ? null : Number(value)
+    }));
+  };
 
   return (
     <main className="app">
@@ -498,16 +515,25 @@ export default function App() {
             <aside className="trade-panel">
               <div className="quote-card">
                 <small>{instrument.symbol}</small>
-                <strong>{price(currentCandle.close)}</strong>
-                <span>{timeframe} · candle {replayIndex + 1}/{baseCandles.length}</span>
+                <strong>{Number(currentCandle.close).toFixed(instrument.digits ?? 2)}</strong>
+                <span>{timeframe} · candle {replayIndex + 1}/{baseCandles.length} · chart {instrument.chartMode === "bid" ? "BID" : "MID"}</span>
+                <small className="quote-ask">Modelled ask: {quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</small>
               </div>
 
               <div className="field-row">
-                <label>Lots<input type="number" step={instrument.lotStep} value={lots} onChange={(e) => setLots(Number(e.target.value))} /></label>
+                <label>Lots (min {instrument.minLot}, step {instrument.lotStep})
+                  <input type="number" min={instrument.minLot} max={instrument.maxLot} step={instrument.lotStep}
+                    value={lots} onChange={(e) => setLots(Number(e.target.value))} />
+                </label>
                 <label>Leverage<input type="number" value={accountConfig.leverage} onChange={(e) => updateAccount("leverage", e.target.value)} /></label>
               </div>
-              <label>Stop loss<input type="number" value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="optional" /></label>
-              <label>Take profit<input type="number" value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="optional" /></label>
+              <label>Stop loss<input type="number" step={instrument.tickSize} value={stopLoss} onChange={(e) => setStopLoss(e.target.value)} placeholder="optional" /></label>
+              <label>Take profit<input type="number" step={instrument.tickSize} value={takeProfit} onChange={(e) => setTakeProfit(e.target.value)} placeholder="optional" /></label>
+              {instrument.stopsLevelPoints ? (
+                <div className="spec-note">Minimum SL/TP distance: {instrument.stopsLevelPoints} points
+                  ({(instrument.stopsLevelPoints * instrument.tickSize).toFixed(instrument.digits ?? 2)} USD)
+                </div>
+              ) : null}
 
               <div className="deal-buttons">
                 <button className="sell" onClick={() => place("sell")}>SELL</button>
@@ -517,10 +543,11 @@ export default function App() {
               <div className={"account-metrics " + (marginWarning ? "warning" : "")}>
                 <Metric label="Balance" value={money(accountMetrics.balance)} />
                 <Metric label="Equity" value={money(accountMetrics.equity)} />
-                <Metric label="Floating" value={money(accountMetrics.floatingPnl)} />
+                <Metric label="Floating incl. swaps" value={money(accountMetrics.floatingPnl)} />
                 <Metric label="Margin" value={money(accountMetrics.usedMargin)} />
                 <Metric label="Free margin" value={money(accountMetrics.freeMargin)} />
                 <Metric label="Margin level" value={accountMetrics.marginLevel === null ? "∞" : money(accountMetrics.marginLevel) + "%"} />
+                <Metric label="Open swap" value={money(accountMetrics.swaps)} />
               </div>
 
               <details>
@@ -529,12 +556,13 @@ export default function App() {
                   <label>Initial balance<input type="number" value={accountConfig.initialBalance} onChange={(e) => updateAccount("initialBalance", e.target.value)} /></label>
                   <label>Margin call %<input type="number" value={accountConfig.marginCallLevel} onChange={(e) => updateAccount("marginCallLevel", e.target.value)} /></label>
                   <label>Stop-out %<input type="number" value={accountConfig.stopOutLevel} onChange={(e) => updateAccount("stopOutLevel", e.target.value)} /></label>
-                  <label>Contract size<input type="number" value={instrument.contractSize} onChange={(e) => updateInstrument("contractSize", e.target.value)} /></label>
-                  <label>Spread (price)<input type="number" step="0.01" value={instrument.spread} onChange={(e) => updateInstrument("spread", e.target.value)} /></label>
-                  <label>Commission RT/lot<input type="number" step="0.01" value={instrument.commissionPerLotRoundTurn} onChange={(e) => updateInstrument("commissionPerLotRoundTurn", e.target.value)} /></label>
+                  <label>Currency<input type="text" value={accountConfig.currency} readOnly /></label>
                 </div>
                 <button className="ghost full" onClick={resetAccount}>Reset account</button>
               </details>
+
+              <InstrumentDetails instrument={instrument} account={accountConfig}
+                chartPrice={currentCandle.close} update={updateInstrument} />
 
               {supabaseConfigured && !session && (
                 <details>
@@ -572,9 +600,9 @@ export default function App() {
                         <td className={position.side}>{position.side.toUpperCase()}</td>
                         <td>{position.lots}</td>
                         <td>{dateTime(position.openTime)}</td>
-                        <td>{price(position.openPrice)}</td>
-                        <td>{price(position.stopLoss)}</td>
-                        <td>{price(position.takeProfit)}</td>
+                        <td>{position.openPrice.toFixed(instrument.digits ?? 2)}</td>
+                        <td>{position.stopLoss === undefined ? "—" : position.stopLoss.toFixed(instrument.digits ?? 2)}</td>
+                        <td>{position.takeProfit === undefined ? "—" : position.takeProfit.toFixed(instrument.digits ?? 2)}</td>
                         <td>{money(positionRawPnl(position, currentCandle.close, instrument))}</td>
                         <td><button className="tiny" onClick={() => close(position.id)}>Close</button></td>
                       </tr>
