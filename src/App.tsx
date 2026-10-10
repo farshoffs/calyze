@@ -1059,7 +1059,7 @@ export default function App() {
                 </table>
               )}
             </div>
-          </section></section>
+          </section>
         </>
       )}
     </main>
