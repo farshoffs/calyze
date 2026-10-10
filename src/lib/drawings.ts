@@ -152,7 +152,7 @@ export function parseDrawings(value: unknown): Drawing[] {
     if (!item || typeof item !== "object") return false;
     const shape = item as Partial<Drawing>;
     return typeof shape.id === "string" &&
-      TOOLS.some((tool) => tool.kind === shape.kind && tool.kind !== "cursor") &&
+      TOOLS.some((tool) => tool.kind === shape.kind) &&
       Array.isArray(shape.anchors) &&
       shape.anchors.length > 0 &&
       shape.anchors.every((a) => Number.isFinite(a.time) && Number.isFinite(a.price)) &&
