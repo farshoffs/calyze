@@ -545,6 +545,7 @@ export default function App() {
       // Make drawing snapshot available before remounting TradingChart.
       restoreStoredDrawings(ownerId, saved.dataset.name, saved.instrument.symbol, saved.drawings);
       setDatasetName(saved.dataset.name);
+      if (!loadedIdentity) throw new Error("No source dataset available for restore.");
       setDatasetIdentity({ ...loadedIdentity, cloudDatasetId: saved.dataset.cloudDatasetId || loadedIdentity.cloudDatasetId });
       setReplayIndex(correctIndex);
       setTimeframe(saved.timeframe);
