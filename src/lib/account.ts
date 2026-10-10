@@ -7,10 +7,15 @@ export function initialAccount(config: AccountConfig): AccountState {
   return { balance: config.initialBalance, positions: [], history: [] };
 }
 
-/** Chart source prices are bid for USOIL.S; ask is estimated from configured spread. */
+/** MT-style bid chart uses a symbol tick grid, while legacy mid datasets keep original precision. */
 export function quote(chartPrice: number, spec: InstrumentSpec): { bid: number; ask: number } {
   const spread = Math.max(0, spec.spread);
-  if (spec.chartMode === "bid") return { bid: chartPrice, ask: chartPrice + spread };
+  if (spec.chartMode === "bid") {
+    const tick = spec.tickSize;
+    const round = (value: number) => tick > 0 ? Number((Math.round(value / tick) * tick).toFixed(8)) : value;
+    const bid = round(chartPrice);
+    return { bid, ask: round(bid + spread) };
+  }
   return { bid: chartPrice - spread / 2, ask: chartPrice + spread / 2 };
 }
 
@@ -121,6 +126,10 @@ export function openPosition(
   config: AccountConfig, spec: InstrumentSpec, stopLoss?: number, takeProfit?: number
 ): { state: AccountState; error?: string } {
   if (!(config.leverage > 0)) return { state, error: "Leverage must be greater than zero." };
+  if (!(spec.contractSize > 0) || !(spec.tickSize > 0) || !Number.isFinite(spec.spread) || spec.spread < 0 ||
+      !Number.isFinite(spec.commissionPerLotRoundTurn) || spec.commissionPerLotRoundTurn < 0) {
+    return { state, error: "Instrument contract, tick, spread or commission settings are invalid." };
+  }
   const lotError = validateLots(lots, state, spec);
   if (lotError) return { state, error: lotError };
   if (!isTradeSession(time, spec)) return { state, error: "Outside broker trading session." };
@@ -132,7 +141,7 @@ export function openPosition(
   const requiredMargin = marginForOrder(side, lots, chartPrice, config, spec);
   const before = metrics(state, chartPrice, config, spec);
   const openCommission = spec.commissionPerLotRoundTurn * lots / 2;
-  const immediateSpreadLoss = spec.spread * spec.contractSize * lots;
+  const immediateSpreadLoss = (q.ask - q.bid) * spec.contractSize * lots;
   if (!Number.isFinite(requiredMargin) || !Number.isFinite(openCommission)) {
     return { state, error: "Invalid symbol settings or margin calculation." };
   }
@@ -201,19 +210,17 @@ export function swapBetween(position: Position, fromTime: number, throughTime: n
 function exitOnBar(
   position: Position, candle: Candle, spec: InstrumentSpec
 ): { price: number; reason: ExitReason } | null {
-  const bidOffset = spec.chartMode === "bid" ? 0 : -spec.spread / 2;
-  const askOffset = spec.chartMode === "bid" ? spec.spread : spec.spread / 2;
   if (position.side === "buy") {
-    const bidLow = candle.low + bidOffset;
-    const bidHigh = candle.high + bidOffset;
+    const bidLow = quote(candle.low, spec).bid;
+    const bidHigh = quote(candle.high, spec).bid;
     const sl = position.stopLoss !== undefined && bidLow <= position.stopLoss;
     const tp = position.takeProfit !== undefined && bidHigh >= position.takeProfit;
     if (sl) return { price: position.stopLoss!, reason: "stop_loss" };
     if (tp) return { price: position.takeProfit!, reason: "take_profit" };
     return null;
   }
-  const askLow = candle.low + askOffset;
-  const askHigh = candle.high + askOffset;
+  const askLow = quote(candle.low, spec).ask;
+  const askHigh = quote(candle.high, spec).ask;
   const sl = position.stopLoss !== undefined && askHigh >= position.stopLoss;
   const tp = position.takeProfit !== undefined && askLow <= position.takeProfit;
   if (sl) return { price: position.stopLoss!, reason: "stop_loss" };
