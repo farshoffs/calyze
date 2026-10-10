@@ -3,6 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import TradingChart from "./components/TradingChart";
 import InstrumentDetails from "./components/InstrumentDetails";
 import SaveStatePanel from "./components/SaveStatePanel";
+import WorkspaceDrawer from "./components/WorkspaceDrawer";
 import {
   createSlot, drawingStorageKey, fetchCloudStates, saveCloudState,
   listLocalSaves, putLocalSave, removeLocalSave, deleteCloudState,
@@ -19,7 +20,8 @@ import {
   metrics,
   openPosition,
   positionRawPnl,
-  quote
+  quote,
+  marginForOrder
 } from "./lib/account";
 import { downloadCsvArchive, listCloudDatasets, saveCsvArchive, type CloudDataset } from "./lib/cloud";
 import { supabase, supabaseConfigured } from "./lib/supabase";
@@ -81,6 +83,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [authFeedback, setAuthFeedback] = useState("");
   const [cloudProgress, setCloudProgress] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [cloudDatasets, setCloudDatasets] = useState<CloudDataset[]>([]);
@@ -94,6 +97,10 @@ export default function App() {
   const [saveSlots, setSaveSlots] = useState<SaveSlot[]>([]);
   const [saveStatus, setSaveStatus] = useState("");
   const [saveBusy, setSaveBusy] = useState(false);
+  const [openPanel, setOpenPanel] = useState<"saved" | "library" | null>(null);
+  const [mobileView, setMobileView] = useState<"chart" | "trade" | "history">("chart");
+  const [blotterTab, setBlotterTab] = useState<"open" | "closed">("open");
+  const [seekTarget, setSeekTarget] = useState(0);
   const [drawingGeneration, setDrawingGeneration] = useState(0);
   const snapshotRef = useRef<SaveStateSnapshot | null>(null);
   const cloudSavingRef = useRef(false);
@@ -107,6 +114,7 @@ export default function App() {
     [baseCandles, timeframe]
   );
 
+  useEffect(() => setSeekTarget(replayIndex), [replayIndex]);
   const currentCandle = baseCandles[replayIndex];
   const currentTime = currentCandle?.time ?? 0;
   const visibleAggregated = useMemo(() => {
@@ -144,6 +152,14 @@ export default function App() {
         : metrics(account, 0, accountConfig, instrument),
     [account, currentCandle, accountConfig, instrument]
   );
+
+  const buyMargin = currentCandle
+    ? marginForOrder("buy", lots, currentCandle.close, accountConfig, instrument) : 0;
+  const sellMargin = currentCandle
+    ? marginForOrder("sell", lots, currentCandle.close, accountConfig, instrument) : 0;
+  const estimatedSpreadCost = currentCandle
+    ? (quote(currentCandle.close, instrument).ask - quote(currentCandle.close, instrument).bid)
+      * instrument.contractSize * lots : 0;
 
   const marginWarning =
     accountMetrics.marginLevel !== null && accountMetrics.marginLevel <= accountConfig.marginCallLevel;
@@ -189,6 +205,7 @@ export default function App() {
       setDatasetName(name);
       setReplayIndex(start);
       setAccount(initialAccount(accountConfig));
+      setMobileView("chart");
       const spec = instrumentFromImport(file.name);
       setInstrument(spec);
       setLots(spec.minLot);
@@ -216,6 +233,8 @@ export default function App() {
   }
 
   function resetAccount() {
+    if ((account.positions.length || account.history.length) &&
+      !window.confirm("Reset this account? Open and closed trades will be cleared. Save a checkpoint first.")) return;
     setPlaying(false);
     setAccount(initialAccount(accountConfig));
     setStatus("Trading account reset to initial balance.");
@@ -228,8 +247,26 @@ export default function App() {
     setAccount(initialAccount(accountConfig));
   }
 
+  function confirmReplaceDataset(): boolean {
+    if (!account.positions.length && !account.history.length) return true;
+    return window.confirm("Opening a different CSV resets the current trading account. Save this session first?");
+  }
+
+  function confirmSeek(): boolean {
+    if (!account.positions.length && !account.history.length) return true;
+    return window.confirm("Jumping through history resets the simulated account and trade history. Save a checkpoint before continuing?");
+  }
+
+  function applySeek(index: number) {
+    if (!baseCandles.length || !confirmSeek()) return;
+    setPlaying(false);
+    setReplayIndex(Math.max(0, Math.min(baseCandles.length - 1, index)));
+    setAccount(initialAccount(accountConfig));
+    setStatus("Replay moved. Trading account reset to prevent carrying orders across skipped candles.");
+  }
+
   function jumpToDate(value: string) {
-    if (!value || !baseCandles.length) return;
+    if (!value || !baseCandles.length || !confirmSeek()) return;
     const utc = Date.parse(value + "T00:00:00Z") / 1000;
     if (!Number.isFinite(utc)) return;
     const index = Math.min(baseCandles.length - 1, upperBoundTime(baseCandles, utc - 1));
@@ -270,11 +307,16 @@ export default function App() {
 
   async function auth(mode: "signin" | "signup") {
     if (!supabase) return;
+    setAuthFeedback("Connecting…");
     const result =
       mode === "signin"
         ? await supabase.auth.signInWithPassword({ email, password })
         : await supabase.auth.signUp({ email, password });
-    setStatus(result.error ? result.error.message : mode === "signin" ? "Signed in." : "Account created.");
+    const message = result.error ? result.error.message : mode === "signin"
+      ? "Signed in. Your cloud library is ready."
+      : "Account created. Verify your email if confirmation is enabled.";
+    setAuthFeedback(message);
+    setStatus(message);
   }
 
   const refreshCloud = useCallback(async () => {
@@ -362,7 +404,10 @@ export default function App() {
       setInstrument(spec);
       setLots(spec.minLot);
       setCloudProgress("Restored " + dataset.name + " from Supabase.");
+      setOpenPanel(null);
+      setMobileView("chart");
     } catch (error) {
+      setStatus("Could not open cloud dataset. Check the Cloud & datasets panel.");
       setCloudProgress("Failed to open cloud dataset: " +
         (error instanceof Error ? error.message : String(error)));
     } finally {
@@ -587,6 +632,8 @@ export default function App() {
         new Date(saved.replayTime * 1000).toISOString().replace("T", " ").slice(0, 16) +
         " UTC. Replay is paused; account and orders restored.");
       setStatus("Restored named backtest session: " + slot.name);
+      setMobileView("chart");
+      setOpenPanel(null);
     } catch (error) {
       setSaveStatus("Restore unavailable: " +
         (error instanceof Error ? error.message : String(error)));
@@ -637,107 +684,162 @@ export default function App() {
   };
 
   return (
-    <main className="app">
+    <main className="app" data-mobile-view={mobileView}>
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">C</span>
+        <div className="brand" aria-label="Calyze historical trading terminal">
+          <span className="brand-mark" aria-hidden="true">C</span>
           <div>
             <strong>Calyze</strong>
-            <small>Historical Trading Lab</small>
+            <small>REPLAY TERMINAL</small>
           </div>
         </div>
-
-        <div className="dataset">
-          <button className="ghost" onClick={() => fileRef.current?.click()}>
-            Import M1 CSV
+        <div className="header-context" title={status}>
+          <span className="header-context-label">{baseCandles.length ? instrument.symbol : "Historical analysis"}</span>
+          <span>{baseCandles.length ? datasetName : "Offline-first · No live market feed"}</span>
+        </div>
+        <nav className="top-actions" aria-label="Workspace actions">
+          <button className="header-action" onClick={() => fileRef.current?.click()}
+            title="Import cTrader M1 historical CSV">
+            <span aria-hidden="true">↑</span> Import
           </button>
-          <input
-            ref={fileRef}
-            hidden
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(e) => e.target.files?.[0] && onImport(e.target.files[0])}
-          />
-          <span title={status}>{status}</span>
-        </div>
-
-        <div className="top-actions">
-          {supabaseConfigured ? (
-            session ? (
-              <>
-                <button className="ghost" onClick={() => pendingFile && void persistFile(pendingFile)}
-                  disabled={!pendingFile || cloudBusy || savedFileRef.current === pendingFile}>
-                  {cloudBusy ? "Syncing…" : "Retry / Save"}
-                </button>
-                <button className="ghost" onClick={() => supabase?.auth.signOut()}>
-                  Sign out
-                </button>
-              </>
-            ) : (
-              <span className="cloud-off">Supabase ready · sign in below</span>
-            )
-          ) : (
-            <span className="cloud-off">Local mode</span>
-          )}
-        </div>
+          <button className="header-action" onClick={() => setOpenPanel("saved")}
+            aria-label={"Open saved backtests, " + saveSlots.length + " available"}>
+            <span aria-hidden="true">▣</span> Saves
+            {saveSlots.length > 0 && <span className="action-count">{saveSlots.length}</span>}
+          </button>
+          <button className="header-action" onClick={() => setOpenPanel("library")}
+            title="Supabase cloud library and authentication">
+            <span className={"sync-indicator " + (session ? "online" : "")} aria-hidden="true" />
+            {cloudBusy ? "Syncing" : session ? "Library" : "Cloud"}
+          </button>
+        </nav>
+        <input ref={fileRef} hidden type="file" accept=".csv,text/csv"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file && confirmReplaceDataset()) {
+              setOpenPanel(null);
+              void onImport(file);
+            }
+            event.target.value = "";
+          }} />
       </header>
 
-      {supabaseConfigured && !session && (
-        <section className="auth-banner">
-          <strong>Cloud backup</strong>
-          <span>Sign in to automatically save every imported CSV and open it on other devices.</span>
-          <input type="email" autoComplete="email" placeholder="Email" value={email}
-            onChange={(event) => setEmail(event.target.value)} />
-          <input type="password" autoComplete="current-password" placeholder="Password" value={password}
-            onChange={(event) => setPassword(event.target.value)} />
-          <button onClick={() => void auth("signin")}>Sign in</button>
-          <button onClick={() => void auth("signup")}>Sign up</button>
-        </section>
+      {baseCandles.length > 0 && (
+        <>
+          <section className="workspace-stats" aria-label="Simulated account summary">
+            <div className="workspace-stat"><span>Account</span><strong>{accountName}</strong></div>
+            <div className="workspace-stat"><span>Balance</span><strong>{accountConfig.currency} {money(accountMetrics.balance)}</strong></div>
+            <div className="workspace-stat"><span>Equity</span>
+              <strong className={accountMetrics.equity < accountMetrics.balance ? "negative" : "positive"}>
+                {money(accountMetrics.equity)}
+              </strong>
+            </div>
+            <div className="workspace-stat"><span>Free margin</span><strong>{money(accountMetrics.freeMargin)}</strong></div>
+            <div className="workspace-stat"><span>Margin level</span>
+              <strong className={marginWarning ? "caution" : ""}>
+                {accountMetrics.marginLevel === null ? "—" : money(accountMetrics.marginLevel) + "%"}
+              </strong>
+            </div>
+            <div className="workspace-stat stat-time"><span>Replay · UTC</span>
+              <strong>{dateTime(currentTime)}</strong>
+            </div>
+          </section>
+          <nav className="mobile-workspace-nav" aria-label="Mobile workspace">
+            <button aria-pressed={mobileView === "chart"} className={mobileView === "chart" ? "selected" : ""}
+              onClick={() => setMobileView("chart")}>▤ <span>Chart</span></button>
+            <button aria-pressed={mobileView === "trade"} className={mobileView === "trade" ? "selected" : ""}
+              onClick={() => setMobileView("trade")}>⇅ <span>Trade</span></button>
+            <button aria-pressed={mobileView === "history"} className={mobileView === "history" ? "selected" : ""}
+              onClick={() => { setBlotterTab("closed"); setMobileView("history"); }}>▦ <span>History</span></button>
+          </nav>
+        </>
       )}
 
-      {session && (
-        <section className="cloud-shelf">
-          <div className="cloud-heading">
-            <strong>Supabase library · {cloudDatasets.length} dataset(s)</strong>
-            <button className="ghost" onClick={() => void refreshCloud()}>Refresh</button>
-            {pendingFile && savedFileRef.current !== pendingFile && !cloudBusy && (
-              <button onClick={() => void persistFile(pendingFile)}>Retry cloud backup</button>
-            )}
-          </div>
-          {cloudProgress && <div className="cloud-sync-status">{cloudProgress}</div>}
-          <div className="cloud-files">
-            {cloudDatasets.map((dataset) => (
-              <button key={dataset.id} className="cloud-file" disabled={cloudBusy}
-                onClick={() => void openCloudDataset(dataset)}>
-                <strong>{dataset.symbol} · {dataset.name}</strong>
-                <span>{Number(dataset.row_count).toLocaleString()} M1 candles · {new Date(dataset.created_at).toLocaleDateString()}</span>
-                <small>Open from Supabase ↗</small>
-              </button>
-            ))}
-            {!cloudDatasets.length && <span className="cloud-empty">No completed cloud backups yet. Import a CSV to begin.</span>}
-          </div>
-        </section>
+      {status && status !== "Import an M1 CSV exported from cTrader." && (
+        <div className="workspace-feedback" role="status" title={status}>
+          <span aria-hidden="true">●</span> {status}
+        </div>
       )}
 
-      {!session && cloudProgress && (
-        <div className="cloud-sync-status standalone">{cloudProgress}</div>
+      {openPanel === "saved" && (
+        <WorkspaceDrawer title="Save states" subtitle="Resume a replay session or manage account checkpoints."
+          onClose={() => setOpenPanel(null)}>
+          <SaveStatePanel
+            accountName={accountName} onAccountNameChange={setAccountName}
+            saveName={saveName} onSaveNameChange={setSaveName}
+            slots={saveSlots} hasDataset={Boolean(datasetIdentity)}
+            cloudReady={Boolean(session && datasetIdentity?.cloudDatasetId)}
+            busy={saveBusy} status={saveStatus}
+            onSave={() => void saveCheckpoint("manual", saveName)}
+            onNewAccount={newAccount}
+            onResume={(slot) => void restoreSlot(slot)}
+            onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
+            onDelete={(slot) => void deleteSlot(slot)}
+            onRefresh={() => void refreshSaves()}
+          />
+        </WorkspaceDrawer>
       )}
 
-      <SaveStatePanel
-        accountName={accountName} onAccountNameChange={setAccountName}
-        saveName={saveName} onSaveNameChange={setSaveName}
-        slots={saveSlots}
-        hasDataset={Boolean(datasetIdentity)}
-        cloudReady={Boolean(session && datasetIdentity?.cloudDatasetId)}
-        busy={saveBusy}
-        status={saveStatus}
-        onSave={() => void saveCheckpoint("manual", saveName)}
-        onNewAccount={newAccount}
-        onResume={(slot) => void restoreSlot(slot)}
-        onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
-        onDelete={(slot) => void deleteSlot(slot)}
-        onRefresh={() => void refreshSaves()}
-      />
+      {openPanel === "library" && (
+        <WorkspaceDrawer title="Cloud & datasets"
+          subtitle="Import, store and reopen historical market data across your devices."
+          onClose={() => setOpenPanel(null)}>
+          {!supabaseConfigured ? (
+            <p className="drawer-explainer">Cloud storage is not configured. Local CSV imports and save states remain available on this device.</p>
+          ) : session ? (
+            <>
+              <div className="drawer-account">
+                <span>Signed in as <strong>{session.user.email}</strong></span>
+                <button className="ghost" onClick={() => supabase?.auth.signOut()}>Sign out</button>
+              </div>
+              <div className="drawer-actions">
+                <button onClick={() => fileRef.current?.click()}>↑ Import another CSV</button>
+                <button onClick={() => void refreshCloud()}>↻ Refresh library</button>
+                {pendingFile && savedFileRef.current !== pendingFile && (
+                  <button disabled={cloudBusy} onClick={() => void persistFile(pendingFile)}>
+                    {cloudBusy ? "Uploading…" : "Retry cloud backup"}
+                  </button>
+                )}
+              </div>
+              <div className="drawer-section-heading">
+                <strong>Cloud datasets</strong>
+                <span>{cloudDatasets.length} archived</span>
+              </div>
+              <div className="library-dataset-list">
+                {cloudDatasets.map((dataset) => (
+                  <button key={dataset.id} className="library-dataset" disabled={cloudBusy}
+                    onClick={() => { if (confirmReplaceDataset()) void openCloudDataset(dataset); }}>
+                    <span className="library-dataset-icon">▤</span>
+                    <span className="library-dataset-text">
+                      <strong>{dataset.symbol} · {dataset.name}</strong>
+                      <small>{Number(dataset.row_count).toLocaleString()} candles ·
+                        {new Date(dataset.created_at).toLocaleDateString()}</small>
+                    </span>
+                    <span aria-hidden="true">↗</span>
+                  </button>
+                ))}
+                {!cloudDatasets.length && (
+                  <p className="drawer-explainer">Your library is empty. Import an M1 CSV to start a cloud archive.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="drawer-signin">
+              <p className="drawer-explainer">Sign in to save your WTI history and backtest states to Supabase.</p>
+              <label>Email <input type="email" autoComplete="email" value={email}
+                onChange={(e) => setEmail(e.target.value)} placeholder="Email address" /></label>
+              <label>Password <input type="password" autoComplete="current-password" value={password}
+                onChange={(e) => setPassword(e.target.value)} placeholder="Password" /></label>
+              <div className="drawer-actions">
+                <button className="primary" onClick={() => void auth("signin")}>Sign in</button>
+                <button onClick={() => void auth("signup")}>Create account</button>
+              </div>
+              {authFeedback && <p className="drawer-progress" role="status">{authFeedback}</p>}
+            </div>
+          )}
+          {cloudProgress && <p className="drawer-progress" role="status">{cloudProgress}</p>}
+        </WorkspaceDrawer>
+      )}
 
       {!baseCandles.length ? (
         <section className="empty-state">
@@ -765,46 +867,63 @@ export default function App() {
           <section className="terminal">
             <div className="chart-column">
               <div className="marketbar">
-                <div className="timeframes">
-                  {timeframes.map((tf) => (
-                    <button
-                      key={tf}
-                      className={tf === timeframe ? "active" : ""}
-                      onClick={() => setTimeframe(tf)}
-                    >
-                      {tf}
-                    </button>
-                  ))}
-                </div>
-                <div className="replay-controls">
-                  <button onClick={jumpToStart}>↤</button>
-                  <button onClick={() => replayIndex > 0 && setReplayIndex((i) => i - 1)}>‹</button>
-                  <button className="play" onClick={() => setPlaying((value) => !value)}>
-                    {playing ? "Pause" : "Replay"}
-                  </button>
-                  <button onClick={stepOnce}>›</button>
-                  <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-                    {[1, 2, 4, 8, 16, 25].map((item) => (
-                      <option key={item} value={item}>{item}×</option>
+                <div className="marketbar-primary">
+                  <div className="timeframes" aria-label="Chart timeframe">
+                    {timeframes.map((tf) => (
+                      <button key={tf} aria-pressed={tf === timeframe}
+                        className={tf === timeframe ? "active" : ""}
+                        onClick={() => setTimeframe(tf)}>{tf}</button>
                     ))}
-                  </select>
-                  <span className="clock">{dateTime(currentCandle.time)}</span>
-                  <label className="jump-date-control" title="Jump to a historical date (resets account)">
-                    Date
+                  </div>
+                  <div className="replay-controls" aria-label="Replay controls">
+                    <button title="Restart from first candle in 2026" aria-label="Restart replay"
+                      onClick={() => { if (confirmSeek()) jumpToStart(); }}>↤</button>
+                    <button title="Previous M1 candle" aria-label="Previous candle"
+                      disabled={replayIndex <= 0} onClick={() => {
+                        if (!account.positions.length && !account.history.length) {
+                          setPlaying(false);
+                          setReplayIndex((index) => Math.max(0, index - 1));
+                        } else {
+                          applySeek(replayIndex - 1);
+                        }
+                      }}>‹</button>
+                    <button className="play" aria-label={playing ? "Pause replay" : "Play replay"}
+                      aria-pressed={playing} onClick={() => setPlaying((value) => !value)}>
+                      {playing ? "Ⅱ Pause" : "▶ Play"}
+                    </button>
+                    <button title="Next M1 candle" aria-label="Next candle" onClick={stepOnce}
+                      disabled={replayIndex >= baseCandles.length - 1}>›</button>
+                    <label className="speed-select" title="Replay speed">
+                      <span>Speed</span>
+                      <select value={speed} aria-label="Replay speed"
+                        onChange={(e) => setSpeed(Number(e.target.value))}>
+                        {[1, 2, 4, 8, 16, 25].map((item) => (
+                          <option key={item} value={item}>{item}×</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div className="marketbar-secondary">
+                  <label className="jump-date-control" title="Jump to historical date (resets account)">
+                    Jump to
                     <input type="date"
                       min={new Date(baseCandles[0].time * 1000).toISOString().slice(0, 10)}
                       max={new Date(baseCandles[baseCandles.length - 1].time * 1000).toISOString().slice(0, 10)}
                       value={new Date(currentTime * 1000).toISOString().slice(0, 10)}
                       onChange={(event) => jumpToDate(event.target.value)} />
                   </label>
-                  <input className="replay-seek" type="range" min="0"
-                    max={Math.max(0, baseCandles.length - 1)} value={replayIndex}
-                    title="Seek through entire historical dataset (resets open trades)"
-                    onChange={(event) => {
-                      setPlaying(false);
-                      setReplayIndex(Number(event.target.value));
-                      setAccount(initialAccount(accountConfig));
-                    }} />
+                  <label className="timeline-seek">
+                    <span>Timeline</span>
+                    <input type="range" min="0" max={baseCandles.length - 1}
+                      aria-label="Preview historical candle position" value={seekTarget}
+                      onChange={(event) => setSeekTarget(Number(event.target.value))} />
+                  </label>
+                  <button className="timeline-apply" onClick={() => applySeek(seekTarget)}
+                    disabled={seekTarget === replayIndex}>Go</button>
+                  <time className="clock" dateTime={new Date(currentTime * 1000).toISOString()}>
+                    {dateTime(currentTime)} UTC
+                  </time>
                 </div>
               </div>
               <TradingChart key={datasetName + ":" + instrument.symbol + ":" + drawingGeneration}
@@ -813,12 +932,22 @@ export default function App() {
                 workspaceKey={datasetName + ":" + instrument.symbol} userId={session?.user.id} />
             </div>
 
-            <aside className="trade-panel">
+            <aside className="trade-panel" aria-label="Manual trading ticket">
+              <div className="ticket-heading">
+                <span>MANUAL ORDER</span>
+                <strong>{instrument.symbol}</strong>
+              </div>
               <div className="quote-card">
-                <small>{instrument.symbol}</small>
-                <strong>{Number(currentCandle.close).toFixed(instrument.digits ?? 2)}</strong>
-                <span>{timeframe} · candle {replayIndex + 1}/{baseCandles.length} · chart {instrument.chartMode === "bid" ? "BID" : "MID"}</span>
-                <small className="quote-ask">Modelled ask: {quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</small>
+                <div className="quote-pair">
+                  <div><span>SELL · BID</span><strong className="negative">
+                    {quote(currentCandle.close, instrument).bid.toFixed(instrument.digits ?? 2)}
+                  </strong></div>
+                  <div><span>BUY · ASK</span><strong className="positive">
+                    {quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}
+                  </strong></div>
+                </div>
+                <small>{timeframe} · {instrument.chartMode === "bid" ? "Bid" : "Mid"} chart ·
+                  M1 {replayIndex + 1}/{baseCandles.length}</small>
               </div>
 
               <div className="field-row">
@@ -836,10 +965,27 @@ export default function App() {
                 </div>
               ) : null}
 
-              <div className="deal-buttons">
-                <button className="sell" onClick={() => place("sell")}>SELL</button>
-                <button className="buy" onClick={() => place("buy")}>BUY</button>
+              <div className="order-estimates">
+                <div><span>Buy margin</span><strong>{money(buyMargin)} {accountConfig.currency}</strong></div>
+                <div><span>Sell margin</span><strong>{money(sellMargin)} {accountConfig.currency}</strong></div>
+                <div><span>Estimated spread cost</span><strong>{money(estimatedSpreadCost)} {accountConfig.currency}</strong></div>
+                <small>Simulated market execution · margin estimates use current replay price</small>
               </div>
+              <div className="deal-buttons">
+                <button className="sell" aria-label={"Sell " + lots + " lots"} onClick={() => place("sell")}>
+                  <span>SELL MARKET</span><strong>{quote(currentCandle.close, instrument).bid.toFixed(instrument.digits ?? 2)}</strong>
+                </button>
+                <button className="buy" aria-label={"Buy " + lots + " lots"} onClick={() => place("buy")}>
+                  <span>BUY MARKET</span><strong>{quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</strong>
+                </button>
+              </div>
+
+              <button className="view-open-orders" onClick={() => {
+                setBlotterTab("open");
+                setMobileView("history");
+              }}>
+                View open positions ({account.positions.length}) →
+              </button>
 
               <div className={"account-metrics " + (marginWarning ? "warning" : "")}>
                 <Metric label="Balance" value={money(accountMetrics.balance)} />
@@ -866,37 +1012,36 @@ export default function App() {
                 chartPrice={currentCandle.close} update={updateInstrument} />
 
               {supabaseConfigured && !session && (
-                <details>
-                  <summary>Supabase sign in</summary>
-                  <label>Email<input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-                  <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-                  <div className="split">
-                    <button className="ghost" onClick={() => auth("signin")}>Sign in</button>
-                    <button className="ghost" onClick={() => auth("signup")}>Sign up</button>
-                  </div>
-                </details>
+                <button className="ghost full cloud-ticket-button" onClick={() => setOpenPanel("library")}>
+                  Sync your backtests with Supabase →
+                </button>
               )}
-              {session && cloudProgress && <small className="cloud-progress">{cloudProgress}</small>}
             </aside>
           </section>
 
-          <section className="blotter">
-            <div className="tabs">
-              <strong>Open positions ({account.positions.length})</strong>
-              <span>Closed ({account.history.length})</span>
+          <section className="blotter" aria-label="Trading positions and closed trades">
+            <div className="tabs" role="tablist" aria-label="Trade history">
+              <button className={blotterTab === "open" ? "selected" : ""} role="tab"
+                aria-selected={blotterTab === "open"} onClick={() => setBlotterTab("open")}>
+                Open positions <span>{account.positions.length}</span>
+              </button>
+              <button className={blotterTab === "closed" ? "selected" : ""} role="tab"
+                aria-selected={blotterTab === "closed"} onClick={() => setBlotterTab("closed")}>
+                Closed trades <span>{account.history.length}</span>
+              </button>
+              <span className="tabs-context">{accountName} · {instrument.symbol}</span>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Side</th><th>Lots</th><th>Open time</th><th>Open</th><th>SL</th><th>TP</th><th>P/L</th><th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!account.positions.length ? (
-                    <tr><td colSpan={8} className="muted">No open positions.</td></tr>
-                  ) : (
-                    account.positions.map((position) => (
+            <div className="table-wrap" role="tabpanel">
+              {blotterTab === "open" ? (
+                <table>
+                  <thead><tr>
+                    <th>Side</th><th>Lots</th><th>Opened (UTC)</th><th>Entry</th>
+                    <th>SL</th><th>TP</th><th>Floating P/L</th><th>Action</th>
+                  </tr></thead>
+                  <tbody>
+                    {!account.positions.length ? (
+                      <tr><td colSpan={8} className="muted">No open positions. Create a simulated order using the Trade ticket.</td></tr>
+                    ) : account.positions.map((position) => (
                       <tr key={position.id}>
                         <td className={position.side}>{position.side.toUpperCase()}</td>
                         <td>{position.lots}</td>
@@ -904,23 +1049,41 @@ export default function App() {
                         <td>{position.openPrice.toFixed(instrument.digits ?? 2)}</td>
                         <td>{position.stopLoss === undefined ? "—" : position.stopLoss.toFixed(instrument.digits ?? 2)}</td>
                         <td>{position.takeProfit === undefined ? "—" : position.takeProfit.toFixed(instrument.digits ?? 2)}</td>
-                        <td>{money(positionRawPnl(position, currentCandle.close, instrument))}</td>
-                        <td><button className="tiny" onClick={() => close(position.id)}>Close</button></td>
+                        <td className={positionRawPnl(position,currentCandle.close,instrument) < 0 ? "negative" : "positive"}>
+                          {money(positionRawPnl(position, currentCandle.close, instrument) + (position.swapAccrued ?? 0))}
+                        </td>
+                        <td><button className="tiny" onClick={() => close(position.id)}>Close order</button></td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table>
+                  <thead><tr>
+                    <th>Side</th><th>Lots</th><th>Opened (UTC)</th><th>Closed (UTC)</th>
+                    <th>Entry</th><th>Exit</th><th>Reason</th><th>Net P/L</th>
+                  </tr></thead>
+                  <tbody>
+                    {!account.history.length ? (
+                      <tr><td colSpan={8} className="muted">No closed trades yet. Your complete history will appear here.</td></tr>
+                    ) : account.history.map((trade) => (
+                      <tr key={trade.id}>
+                        <td className={trade.side}>{trade.side.toUpperCase()}</td>
+                        <td>{trade.lots}</td>
+                        <td>{dateTime(trade.openTime)}</td>
+                        <td>{dateTime(trade.closeTime)}</td>
+                        <td>{trade.openPrice.toFixed(instrument.digits ?? 2)}</td>
+                        <td>{trade.closePrice?.toFixed(instrument.digits ?? 2) ?? "—"}</td>
+                        <td>{(trade.exitReason ?? "manual").replaceAll("_"," ")}</td>
+                        <td className={(trade.netPnl ?? 0) < 0 ? "negative" : "positive"}>
+                          {money(trade.netPnl ?? 0)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-            {account.history.length > 0 && (
-              <div className="history-strip">
-                {account.history.slice(0, 6).map((trade) => (
-                  <span key={trade.id}>
-                    {trade.side.toUpperCase()} {trade.lots} · {trade.exitReason} · {money(trade.netPnl ?? 0)}
-                  </span>
-                ))}
-              </div>
-            )}
           </section>
         </>
       )}

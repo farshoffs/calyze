@@ -7,3 +7,6 @@ android/.gradle
 android/local.properties
 ios/App/Pods
 coverage
+
+playwright-report
+test-results

@@ -8,10 +8,11 @@
     "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false",
-    "test": "vitest run",
+    "test": "vitest run src",
     "cap:sync": "npm run build && cap sync",
     "android": "npm run cap:sync && cap open android",
-    "ios": "npm run cap:sync && cap open ios"
+    "ios": "npm run cap:sync && cap open ios",
+    "test:ui": "playwright test"
   },
   "dependencies": {
     "@capacitor/core": "7.4.3",
@@ -32,6 +33,7 @@
     "typescript": "5.9.3",
     "vite": "7.1.7",
     "vite-plugin-pwa": "1.0.3",
-    "vitest": "3.2.4"
+    "vitest": "3.2.4",
+    "@playwright/test": "1.55.1"
   }
 }
