@@ -7,12 +7,13 @@ interface Props {
   drawing: Drawing;
   points: PlotPoint[];
   selected: boolean;
+  interactive: boolean;
   width: number;
   height: number;
   onPointerDown: (event: ReactPointerEvent<SVGGElement>, anchorIndex?: number) => void;
 }
 
-export default function DrawingShape({ drawing, points, selected, width, height, onPointerDown }: Props) {
+export default function DrawingShape({ drawing, points, selected, interactive, width, height, onPointerDown }: Props) {
   if (drawing.hidden || !points.length) return null;
   const { color, kind } = drawing;
   const [a, b = a, c = b] = points;
@@ -191,7 +192,7 @@ export default function DrawingShape({ drawing, points, selected, width, height,
   }
 
   return (
-    <g onPointerDown={(event) => {
+    <g pointerEvents={interactive ? "auto" : "none"} onPointerDown={(event) => {
       if (drawing.locked) return;
       event.stopPropagation();
       onPointerDown(event);
