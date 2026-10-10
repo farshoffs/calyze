@@ -194,6 +194,10 @@ export default function App() {
   }, [playing, speed, stepOnce]);
 
   async function onImport(file: File, autoArchive = true) {
+    if (seekingRef.current) {
+      setStatus("Wait for replay navigation to finish before importing another CSV.");
+      return null;
+    }
     setPlaying(false);
     setStatus("Parsing " + file.name + "…");
     try {
@@ -597,6 +601,7 @@ export default function App() {
   }, [captureSnapshot, ownerId]);
 
   async function restoreSlot(slot: SaveSlot) {
+    if (seekingRef.current) return;
     if (!isSnapshot(slot.snapshot)) {
       setSaveStatus("This save state has an unsupported or damaged format.");
       return;
@@ -952,7 +957,7 @@ export default function App() {
                       onChange={(event) => jumpToDate(event.target.value)} />
                   </label>
                   <label className="timeline-seek">
-                    <span>{seekTarget === replayIndex ? "Timeline" : "Preview " +
+                    <span>{seekTarget === replayIndex || !baseCandles[seekTarget] ? "Timeline" : "Preview " +
                       new Date(baseCandles[seekTarget].time * 1000).toISOString().slice(0, 16).replace("T", " ")}</span>
                     <input type="range" min="0" max={baseCandles.length - 1}
                       aria-label="Preview historical candle position" value={seekTarget}
