@@ -139,3 +139,35 @@ td.sell { background: transparent; color: #f87171; }
   .top-actions { display: none; }
   .chart-column { height: 58vh; }
 }
+
+/* Persistent cloud library and authentication on every screen. */
+.auth-banner {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 9px;
+  padding: 10px 14px; border-bottom: 1px solid #244569; background: #0c1827;
+}
+.auth-banner strong { color: #7dd3fc; font-size: 12px; }
+.auth-banner span { color: #b2c1d6; font-size: 12px; flex: 1; min-width: 260px; }
+.auth-banner input { padding: 7px 9px; width: 170px; }
+.cloud-shelf {
+  padding: 9px 14px; border-bottom: 1px solid #223044;
+  background: #0c131e;
+}
+.cloud-heading { display: flex; align-items: center; gap: 10px; font-size: 12px; }
+.cloud-heading strong { margin-right: auto; }
+.cloud-files { display: flex; gap: 8px; overflow-x: auto; padding-top: 7px; }
+.cloud-file {
+  min-width: 215px; max-width: 280px; display: flex; flex-direction: column;
+  align-items: flex-start; text-align: left; gap: 4px; border: 1px solid #304054;
+  background: #111d2a; padding: 9px 10px; border-radius: 7px;
+}
+.cloud-file strong { overflow: hidden; text-overflow: ellipsis; width: 100%; white-space: nowrap; font-size: 12px; }
+.cloud-file span { color: #9daec3; font-size: 11px; }
+.cloud-file small { color: #7dd3fc; font-size: 10px; }
+.cloud-empty { color: #7588a2; font-size: 11px; padding: 5px 0; }
+.cloud-sync-status { color: #93c5fd; font-size: 12px; padding-top: 6px; overflow-wrap: anywhere; }
+.cloud-sync-status.standalone { padding: 8px 14px; background: #0c1827; }
+.replay-seek { width: 120px; min-width: 65px; accent-color: #3b82f6; cursor: pointer; }
+@media (max-width: 800px) {
+  .auth-banner input { flex: 1; min-width: 120px; width: 30%; }
+  .replay-seek { width: 88px; }
+}

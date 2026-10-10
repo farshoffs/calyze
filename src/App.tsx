@@ -11,7 +11,7 @@ import {
   openPosition,
   positionRawPnl
 } from "./lib/account";
-import { saveDatasetToCloud } from "./lib/cloud";
+import { downloadCsvArchive, listCloudDatasets, saveCsvArchive, type CloudDataset } from "./lib/cloud";
 import { supabase, supabaseConfigured } from "./lib/supabase";
 import type {
   AccountConfig,
@@ -72,6 +72,11 @@ export default function App() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [cloudProgress, setCloudProgress] = useState("");
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [cloudDatasets, setCloudDatasets] = useState<CloudDataset[]>([]);
+  const [cloudBusy, setCloudBusy] = useState(false);
+  const uploadingFileRef = useRef<File | null>(null);
+  const savedFileRef = useRef<File | null>(null);
 
   const aggregated = useMemo(
     () => (baseCandles.length ? aggregateCandles(baseCandles, timeframe) : []),
@@ -82,7 +87,9 @@ export default function App() {
   const currentTime = currentCandle?.time ?? 0;
   const visibleAggregated = useMemo(() => {
     if (!currentTime) return [];
-    return aggregated.slice(0, upperBoundTime(aggregated, currentTime));
+    const end = upperBoundTime(aggregated, currentTime);
+    // Render the most recent window, not all 3.3M WTI bars at once.
+    return aggregated.slice(Math.max(0, end - 1600), end);
   }, [aggregated, currentTime]);
 
   const accountMetrics = useMemo(
@@ -122,16 +129,29 @@ export default function App() {
     return () => window.clearInterval(timer);
   }, [playing, speed, stepOnce]);
 
-  async function onImport(file: File) {
+  async function onImport(file: File, autoArchive = true) {
     setPlaying(false);
     setStatus("Parsing " + file.name + "…");
     try {
-      const candles = await parseCtraderCsv(file);
+      const candles = await parseCtraderCsv(file, (progress) => {
+        setStatus("Reading " + progress.rows.toLocaleString() + " candles · " +
+          Math.min(100, Math.floor(progress.fraction * 100)) + "%");
+      });
       const start = Math.min(250, Math.max(0, candles.length - 1));
       setBaseCandles(candles);
       setDatasetName(file.name.replace(/\.csv$/i, ""));
       setReplayIndex(start);
       setAccount(initialAccount(accountConfig));
+      if (/WTI|USOIL/i.test(file.name)) {
+        setInstrument((previous) => ({ ...previous, symbol: "WTI" }));
+      }
+      savedFileRef.current = autoArchive ? null : file;
+      setPendingFile(autoArchive ? file : null);
+      if (autoArchive) {
+        setCloudProgress(session
+          ? "CSV parsed. Automatically backing up to Supabase…"
+          : "Local import loaded. Sign in to automatically save it to Supabase.");
+      }
       setStatus(
         candles.length.toLocaleString() +
           " M1 candles loaded. " +
@@ -194,21 +214,78 @@ export default function App() {
     setStatus(result.error ? result.error.message : mode === "signin" ? "Signed in." : "Account created.");
   }
 
-  async function saveCloud() {
-    if (!baseCandles.length) return;
-    setCloudProgress("Starting…");
+  const refreshCloud = useCallback(async () => {
+    if (!supabase) return;
     try {
-      const id = await saveDatasetToCloud({
-        name: datasetName,
+      const results = await listCloudDatasets();
+      setCloudDatasets(results);
+    } catch (error) {
+      setCloudProgress(error instanceof Error ? error.message : "Could not list saved datasets.");
+    }
+  }, []);
+
+  useEffect(() => {
+    if (session) void refreshCloud();
+    else setCloudDatasets([]);
+  }, [session?.user.id, refreshCloud]);
+
+  const persistFile = useCallback(async (file: File) => {
+    if (!session || !baseCandles.length) return;
+    if (uploadingFileRef.current || savedFileRef.current === file) return;
+    uploadingFileRef.current = file;
+    setCloudBusy(true);
+    setCloudProgress("Preparing secure cloud backup…");
+    try {
+      const id = await saveCsvArchive({
+        file,
+        name: file.name.replace(/\.csv$/i, ""),
         symbol: instrument.symbol,
         candles: baseCandles,
         instrument,
-        onProgress: (done, total) =>
-          setCloudProgress(Math.round((done / total) * 100) + "% (" + done.toLocaleString() + "/" + total.toLocaleString() + ")")
+        onProgress: (done, total) => {
+          setCloudProgress("Saving to Supabase: " + Math.round(done / total * 100) +
+            "% (" + done + "/" + total + " compressed chunks). Keep this tab open.");
+        }
       });
-      setCloudProgress("Saved · " + id.slice(0, 8));
+      savedFileRef.current = file;
+      setCloudProgress("Saved to Supabase successfully · " + id.slice(0, 8) +
+        ". Available when you sign in on another device.");
+      await refreshCloud();
     } catch (error) {
-      setCloudProgress(error instanceof Error ? error.message : "Cloud save failed.");
+      setCloudProgress("Cloud backup failed: " +
+        (error instanceof Error ? error.message : String(error)) +
+        ". Use Retry cloud backup while signed in.");
+    } finally {
+      uploadingFileRef.current = null;
+      setCloudBusy(false);
+    }
+  }, [session?.user.id, baseCandles, instrument, refreshCloud]);
+
+  useEffect(() => {
+    if (!session || !pendingFile || !baseCandles.length) return;
+    if (savedFileRef.current === pendingFile || uploadingFileRef.current) return;
+    void persistFile(pendingFile);
+  }, [session?.user.id, pendingFile, baseCandles, persistFile]);
+
+  async function openCloudDataset(dataset: CloudDataset) {
+    if (cloudBusy) return;
+    setPlaying(false);
+    setCloudBusy(true);
+    setCloudProgress("Opening " + dataset.name + " from Supabase…");
+    try {
+      const file = await downloadCsvArchive(dataset, (done, total) => {
+        setCloudProgress("Downloading " + Math.round(done / total * 100) +
+          "% (" + done + "/" + total + " compressed chunks)");
+      });
+      await onImport(file, false);
+      setDatasetName(dataset.name);
+      setInstrument(dataset.instrument);
+      setCloudProgress("Restored " + dataset.name + " from Supabase.");
+    } catch (error) {
+      setCloudProgress("Failed to open cloud dataset: " +
+        (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setCloudBusy(false);
     }
   }
 
@@ -247,8 +324,9 @@ export default function App() {
           {supabaseConfigured ? (
             session ? (
               <>
-                <button className="ghost" onClick={saveCloud} disabled={!baseCandles.length}>
-                  Save to Supabase
+                <button className="ghost" onClick={() => pendingFile && void persistFile(pendingFile)}
+                  disabled={!pendingFile || cloudBusy || savedFileRef.current === pendingFile}>
+                  {cloudBusy ? "Syncing…" : "Retry / Save"}
                 </button>
                 <button className="ghost" onClick={() => supabase?.auth.signOut()}>
                   Sign out
@@ -262,6 +340,47 @@ export default function App() {
           )}
         </div>
       </header>
+
+      {supabaseConfigured && !session && (
+        <section className="auth-banner">
+          <strong>Cloud backup</strong>
+          <span>Sign in to automatically save every imported CSV and open it on other devices.</span>
+          <input type="email" autoComplete="email" placeholder="Email" value={email}
+            onChange={(event) => setEmail(event.target.value)} />
+          <input type="password" autoComplete="current-password" placeholder="Password" value={password}
+            onChange={(event) => setPassword(event.target.value)} />
+          <button onClick={() => void auth("signin")}>Sign in</button>
+          <button onClick={() => void auth("signup")}>Sign up</button>
+        </section>
+      )}
+
+      {session && (
+        <section className="cloud-shelf">
+          <div className="cloud-heading">
+            <strong>Supabase library · {cloudDatasets.length} dataset(s)</strong>
+            <button className="ghost" onClick={() => void refreshCloud()}>Refresh</button>
+            {pendingFile && savedFileRef.current !== pendingFile && !cloudBusy && (
+              <button onClick={() => void persistFile(pendingFile)}>Retry cloud backup</button>
+            )}
+          </div>
+          {cloudProgress && <div className="cloud-sync-status">{cloudProgress}</div>}
+          <div className="cloud-files">
+            {cloudDatasets.map((dataset) => (
+              <button key={dataset.id} className="cloud-file" disabled={cloudBusy}
+                onClick={() => void openCloudDataset(dataset)}>
+                <strong>{dataset.symbol} · {dataset.name}</strong>
+                <span>{Number(dataset.row_count).toLocaleString()} M1 candles · {new Date(dataset.created_at).toLocaleDateString()}</span>
+                <small>Open from Supabase ↗</small>
+              </button>
+            ))}
+            {!cloudDatasets.length && <span className="cloud-empty">No completed cloud backups yet. Import a CSV to begin.</span>}
+          </div>
+        </section>
+      )}
+
+      {!session && cloudProgress && (
+        <div className="cloud-sync-status standalone">{cloudProgress}</div>
+      )}
 
       {!baseCandles.length ? (
         <section className="empty-state">
@@ -313,6 +432,14 @@ export default function App() {
                     ))}
                   </select>
                   <span className="clock">{dateTime(currentCandle.time)}</span>
+                  <input className="replay-seek" type="range" min="0"
+                    max={Math.max(0, baseCandles.length - 1)} value={replayIndex}
+                    title="Seek through entire historical dataset (resets open trades)"
+                    onChange={(event) => {
+                      setPlaying(false);
+                      setReplayIndex(Number(event.target.value));
+                      setAccount(initialAccount(accountConfig));
+                    }} />
                 </div>
               </div>
               <TradingChart candles={visibleAggregated} symbol={instrument.symbol} />
