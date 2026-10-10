@@ -87,7 +87,9 @@ export default function App() {
   const currentTime = currentCandle?.time ?? 0;
   const visibleAggregated = useMemo(() => {
     if (!currentTime) return [];
-    return aggregated.slice(0, upperBoundTime(aggregated, currentTime));
+    const end = upperBoundTime(aggregated, currentTime);
+    // Render the most recent window, not all 3.3M WTI bars at once.
+    return aggregated.slice(Math.max(0, end - 1600), end);
   }, [aggregated, currentTime]);
 
   const accountMetrics = useMemo(
