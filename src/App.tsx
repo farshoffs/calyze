@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import TradingChart from "./components/TradingChart";
 import { parseCtraderCsv } from "./lib/csv";
-import { aggregateCandles, upperBoundTime } from "./lib/timeframes";
+import { aggregateCandles, upperBoundTime, TIMEFRAME_SECONDS } from "./lib/timeframes";
 import {
   advanceAccount,
   closePosition,
@@ -53,6 +53,14 @@ function dateTime(seconds: number | undefined) {
   return new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19);
 }
 
+function preferredReplayIndex(candles: Candle[]): number {
+  if (!candles.length) return 0;
+  const year2026 = Date.UTC(2026, 0, 1) / 1000;
+  const first2026 = upperBoundTime(candles, year2026 - 1);
+  if (first2026 < candles.length) return first2026;
+  return Math.max(0, candles.length - 251);
+}
+
 export default function App() {
   const fileRef = useRef<HTMLInputElement | null>(null);
   const [baseCandles, setBaseCandles] = useState<Candle[]>([]);
@@ -88,9 +96,30 @@ export default function App() {
   const visibleAggregated = useMemo(() => {
     if (!currentTime) return [];
     const end = upperBoundTime(aggregated, currentTime);
-    // Render the most recent window, not all 3.3M WTI bars at once.
-    return aggregated.slice(Math.max(0, end - 1600), end);
-  }, [aggregated, currentTime]);
+    // Render only a window around the current replay point.
+    const window = aggregated.slice(Math.max(0, end - 1600), end);
+    if (!window.length || timeframe === "M1") return window;
+
+    // IMPORTANT: don't leak the future OHLC of the current incomplete
+    // M5/H1/H4/D1 candle. Rebuild it from M1 only up to replayIndex.
+    const interval = TIMEFRAME_SECONDS[timeframe];
+    const startTime = Math.floor(currentTime / interval) * interval;
+    const firstM1 = upperBoundTime(baseCandles, startTime - 1);
+    const current = baseCandles[replayIndex];
+    if (!current || window[window.length - 1].time !== startTime || firstM1 > replayIndex) return window;
+    const partial = {
+      time: startTime,
+      open: baseCandles[firstM1].open,
+      high: -Infinity, low: Infinity,
+      close: current.close, volume: 0
+    };
+    for (let i = firstM1; i <= replayIndex; i += 1) {
+      partial.high = Math.max(partial.high, baseCandles[i].high);
+      partial.low = Math.min(partial.low, baseCandles[i].low);
+      partial.volume += baseCandles[i].volume;
+    }
+    return [...window.slice(0, -1), partial];
+  }, [aggregated, currentTime, replayIndex, baseCandles, timeframe]);
 
   const accountMetrics = useMemo(
     () =>
@@ -137,7 +166,7 @@ export default function App() {
         setStatus("Reading " + progress.rows.toLocaleString() + " candles · " +
           Math.min(100, Math.floor(progress.fraction * 100)) + "%");
       });
-      const start = Math.min(250, Math.max(0, candles.length - 1));
+      const start = preferredReplayIndex(candles);
       setBaseCandles(candles);
       setDatasetName(file.name.replace(/\.csv$/i, ""));
       setReplayIndex(start);
@@ -172,9 +201,21 @@ export default function App() {
 
   function jumpToStart() {
     setPlaying(false);
-    const start = Math.min(250, Math.max(0, baseCandles.length - 1));
+    const start = preferredReplayIndex(baseCandles);
     setReplayIndex(start);
     setAccount(initialAccount(accountConfig));
+  }
+
+  function jumpToDate(value: string) {
+    if (!value || !baseCandles.length) return;
+    const utc = Date.parse(value + "T00:00:00Z") / 1000;
+    if (!Number.isFinite(utc)) return;
+    const index = Math.min(baseCandles.length - 1, upperBoundTime(baseCandles, utc - 1));
+    setPlaying(false);
+    setReplayIndex(index);
+    setAccount(initialAccount(accountConfig));
+    setStatus("Replay jumped to " + dateTime(baseCandles[index].time) +
+      ". Account reset to avoid future data leakage.");
   }
 
   function place(side: Side) {
@@ -432,6 +473,14 @@ export default function App() {
                     ))}
                   </select>
                   <span className="clock">{dateTime(currentCandle.time)}</span>
+                  <label className="jump-date-control" title="Jump to a historical date (resets account)">
+                    Date
+                    <input type="date"
+                      min={new Date(baseCandles[0].time * 1000).toISOString().slice(0, 10)}
+                      max={new Date(baseCandles[baseCandles.length - 1].time * 1000).toISOString().slice(0, 10)}
+                      value={new Date(currentTime * 1000).toISOString().slice(0, 10)}
+                      onChange={(event) => jumpToDate(event.target.value)} />
+                  </label>
                   <input className="replay-seek" type="range" min="0"
                     max={Math.max(0, baseCandles.length - 1)} value={replayIndex}
                     title="Seek through entire historical dataset (resets open trades)"
@@ -442,7 +491,8 @@ export default function App() {
                     }} />
                 </div>
               </div>
-              <TradingChart candles={visibleAggregated} symbol={instrument.symbol} />
+              <TradingChart candles={visibleAggregated} symbol={instrument.symbol}
+                workspaceKey={datasetName + ":" + instrument.symbol} userId={session?.user.id} />
             </div>
 
             <aside className="trade-panel">
