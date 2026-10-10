@@ -4,6 +4,7 @@ import TradingChart from "./components/TradingChart";
 import InstrumentDetails from "./components/InstrumentDetails";
 import SaveStatePanel from "./components/SaveStatePanel";
 import WorkspaceDrawer from "./components/WorkspaceDrawer";
+import { ReplayLedger } from "./lib/replayLedger";
 import {
   createSlot, drawingStorageKey, fetchCloudStates, saveCloudState,
   listLocalSaves, putLocalSave, removeLocalSave, deleteCloudState,
@@ -101,6 +102,9 @@ export default function App() {
   const [mobileView, setMobileView] = useState<"chart" | "trade" | "history">("chart");
   const [blotterTab, setBlotterTab] = useState<"open" | "closed">("open");
   const [seekTarget, setSeekTarget] = useState(0);
+  const [seeking, setSeeking] = useState(false);
+  const seekingRef = useRef(false);
+  const ledgerRef = useRef<ReplayLedger | null>(null);
   const [drawingGeneration, setDrawingGeneration] = useState(0);
   const snapshotRef = useRef<SaveStateSnapshot | null>(null);
   const cloudSavingRef = useRef(false);
@@ -172,16 +176,15 @@ export default function App() {
   }, []);
 
   const stepOnce = useCallback(() => {
-    setReplayIndex((index) => {
-      if (!baseCandles.length || index >= baseCandles.length - 1) {
-        setPlaying(false);
-        return index;
-      }
-      const nextIndex = index + 1;
-      const candle = baseCandles[nextIndex];
-      setAccount((state) => advanceAccount(state, candle, accountConfig, instrument));
-      return nextIndex;
-    });
+    const ledger = ledgerRef.current;
+    if (!ledger || seekingRef.current || !baseCandles.length) return;
+    if (ledger.index >= baseCandles.length - 1) {
+      setPlaying(false);
+      return;
+    }
+    ledger.advanceOne(baseCandles, accountConfig, instrument);
+    setAccount(ledger.account);
+    setReplayIndex(ledger.index);
   }, [baseCandles, accountConfig, instrument]);
 
   useEffect(() => {
@@ -204,7 +207,9 @@ export default function App() {
       setBaseCandles(candles);
       setDatasetName(name);
       setReplayIndex(start);
-      setAccount(initialAccount(accountConfig));
+      const openingAccount = initialAccount(accountConfig);
+      ledgerRef.current = new ReplayLedger(start, openingAccount);
+      setAccount(openingAccount);
       setMobileView("chart");
       const spec = instrumentFromImport(file.name);
       setInstrument(spec);
@@ -236,15 +241,10 @@ export default function App() {
     if ((account.positions.length || account.history.length) &&
       !window.confirm("Reset this account? Open and closed trades will be cleared. Save a checkpoint first.")) return;
     setPlaying(false);
-    setAccount(initialAccount(accountConfig));
+    const reset = initialAccount(accountConfig);
+    ledgerRef.current?.reset(replayIndex, reset);
+    setAccount(reset);
     setStatus("Trading account reset to initial balance.");
-  }
-
-  function jumpToStart() {
-    setPlaying(false);
-    const start = preferredReplayIndex(baseCandles);
-    setReplayIndex(start);
-    setAccount(initialAccount(accountConfig));
   }
 
   function confirmReplaceDataset(): boolean {
@@ -252,35 +252,62 @@ export default function App() {
     return window.confirm("Opening a different CSV resets the current trading account. Save this session first?");
   }
 
-  function confirmSeek(): boolean {
-    if (!account.positions.length && !account.history.length) return true;
-    return window.confirm("Jumping through history resets the simulated account and trade history. Save a checkpoint before continuing?");
+  /** Time travel restores the ledger instead of clearing the account. */
+  async function moveReplay(targetIndex: number) {
+    const ledger = ledgerRef.current;
+    if (!ledger || seekingRef.current || !baseCandles.length) return;
+    const target = Math.max(0, Math.min(baseCandles.length - 1, Math.floor(targetIndex)));
+    if (target === ledger.index) return;
+    setPlaying(false);
+    seekingRef.current = true;
+    setSeeking(true);
+    setStatus("Moving replay and recalculating simulated positions…");
+    try {
+      const result = await ledger.seek(target, baseCandles, accountConfig, instrument,
+        (done, total) => {
+          if (total > 2500) {
+            setStatus("Rebuilding M1 account history: " +
+              Math.round(done * 100 / total) + "%");
+          }
+        });
+      setAccount(result.account);
+      setReplayIndex(result.index);
+      setSeekTarget(result.index);
+      setStatus(result.undone
+        ? "Replay moved backward: future trade entries and exits undone. Continue trading from this candle."
+        : "Replay moved to " + dateTime(baseCandles[result.index].time) +
+          " UTC. Existing positions and realized trades preserved; floating P/L recalculated.");
+    } catch (error) {
+      setStatus("Replay navigation failed; your account was not reset: " +
+        (error instanceof Error ? error.message : String(error)));
+    } finally {
+      seekingRef.current = false;
+      setSeeking(false);
+    }
+  }
+
+  function jumpToStart() {
+    void moveReplay(preferredReplayIndex(baseCandles));
   }
 
   function applySeek(index: number) {
-    if (!baseCandles.length || !confirmSeek()) return;
-    setPlaying(false);
-    setReplayIndex(Math.max(0, Math.min(baseCandles.length - 1, index)));
-    setAccount(initialAccount(accountConfig));
-    setStatus("Replay moved. Trading account reset to prevent carrying orders across skipped candles.");
+    void moveReplay(index);
   }
 
   function jumpToDate(value: string) {
-    if (!value || !baseCandles.length || !confirmSeek()) return;
+    if (!value || !baseCandles.length) return;
     const utc = Date.parse(value + "T00:00:00Z") / 1000;
     if (!Number.isFinite(utc)) return;
     const index = Math.min(baseCandles.length - 1, upperBoundTime(baseCandles, utc - 1));
-    setPlaying(false);
-    setReplayIndex(index);
-    setAccount(initialAccount(accountConfig));
-    setStatus("Replay jumped to " + dateTime(baseCandles[index].time) +
-      ". Account reset to avoid future data leakage.");
+    void moveReplay(index);
   }
 
   function place(side: Side) {
-    if (!currentCandle) return;
+    if (!currentCandle || seekingRef.current) return;
+    const ledger = ledgerRef.current;
+    if (!ledger) return;
     const result = openPosition(
-      account,
+      ledger.account,
       side,
       lots,
       currentCandle.close,
@@ -294,15 +321,20 @@ export default function App() {
       setStatus(result.error);
       return;
     }
+    ledger.recordAction(result.state);
     setAccount(result.state);
     setStatus(side.toUpperCase() + " " + lots + " lot opened.");
   }
 
   function close(id: string) {
-    if (!currentCandle) return;
-    setAccount((state) =>
-      closePosition(state, id, currentCandle.close, currentCandle.time, instrument, "manual")
+    if (!currentCandle || seekingRef.current) return;
+    const ledger = ledgerRef.current;
+    if (!ledger || !ledger.account.positions.some((position) => position.id === id)) return;
+    const next = closePosition(
+      ledger.account, id, currentCandle.close, currentCandle.time, instrument, "manual"
     );
+    ledger.recordAction(next);
+    setAccount(next);
   }
 
   async function auth(mode: "signin" | "signup") {
