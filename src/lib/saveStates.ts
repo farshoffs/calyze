@@ -1,6 +1,7 @@
 import type { AccountConfig, AccountState, InstrumentSpec, Timeframe, Candle } from "../types";
 import { parseDrawings, type Drawing } from "./drawings";
 import { supabase } from "./supabase";
+import { validReplayLedger, type ReplayLedgerData } from "./replayLedger";
 
 const LOCAL_PREFIX = "calyze:saves:v1:";
 const VERSION = 1 as const;
@@ -30,6 +31,8 @@ export interface SaveStateSnapshot {
   ticket: { lots: number; stopLoss: string; takeProfit: string };
   drawings: Drawing[];
   savedAt: string;
+  /** Reversible manual entry/close events: backward replay survives Save State restore. */
+  replayLedger?: ReplayLedgerData;
 }
 
 export interface SaveSlot {
@@ -84,7 +87,8 @@ export function isSnapshot(value: unknown): value is SaveStateSnapshot {
     Number.isFinite(s.ticket.lots) && s.ticket.lots > 0 &&
     typeof s.accountName === "string" &&
     typeof s.ticket.stopLoss === "string" && typeof s.ticket.takeProfit === "string" &&
-    Array.isArray(s.drawings) && typeof s.savedAt === "string";
+    Array.isArray(s.drawings) && typeof s.savedAt === "string" &&
+    (s.replayLedger === undefined || validReplayLedger(s.replayLedger));
 }
 
 function parseSlot(value: unknown): SaveSlot | null {

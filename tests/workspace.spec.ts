@@ -65,3 +65,56 @@ test("workspace drawers, CSV import and manual trading remain usable", async ({ 
   expect(scroll).toBeLessThanOrEqual(viewport + 2);
   expect(failures).toEqual([]);
 });
+
+test("rewinding a profitable WTI position preserves the entry, then undoes it before entry", async ({ page }) => {
+  await page.goto("/calyze/");
+  await page.locator("input[type='file']").first().setInputFiles({
+    name: "fxpro_WTI_m1.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(csvSample())
+  });
+  await expect(page.locator(".chart-shell")).toBeVisible();
+  const phone = (page.viewportSize()?.width ?? 1440) <= 900;
+  const chart = async () => {
+    if (phone) await page.locator(".mobile-workspace-nav button").nth(0).click();
+  };
+  const trade = async () => {
+    if (phone) await page.locator(".mobile-workspace-nav button").nth(1).click();
+  };
+  const history = async () => {
+    if (phone) await page.locator(".mobile-workspace-nav button").nth(2).click();
+    await page.locator(".tabs button").nth(0).click();
+  };
+  const next = page.getByRole("button", { name: "Next candle" });
+  const previous = page.getByRole("button", { name: "Previous candle" });
+
+  await next.click();
+  await next.click();
+  await trade();
+  await page.locator(".deal-buttons .buy").click();
+  await history();
+  await expect(page.locator(".blotter tbody")).toContainText("BUY");
+  const entry = await page.locator(".blotter tbody tr").first().locator("td").nth(3).textContent();
+
+  await chart();
+  for (let i = 0; i < 10; i++) await next.click();
+  await history();
+  await expect(page.locator(".blotter tbody")).toContainText("BUY");
+
+  await chart();
+  await previous.click();
+  await previous.click();
+  await history();
+  await expect(page.locator(".blotter tbody")).toContainText("BUY");
+  expect(await page.locator(".blotter tbody tr").first().locator("td").nth(3).textContent()).toBe(entry);
+  await expect(page.locator(".workspace-feedback")).not.toContainText("account reset");
+
+  await chart();
+  for (let i = 0; i < 9; i++) await previous.click();
+  await history();
+  await expect(page.locator(".blotter tbody")).toContainText("No open positions");
+  await chart();
+  for (let i = 0; i < 5; i++) await next.click();
+  await history();
+  await expect(page.locator(".blotter tbody")).toContainText("No open positions");
+});
