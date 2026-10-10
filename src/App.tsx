@@ -3,6 +3,7 @@ import type { Session } from "@supabase/supabase-js";
 import TradingChart from "./components/TradingChart";
 import InstrumentDetails from "./components/InstrumentDetails";
 import SaveStatePanel from "./components/SaveStatePanel";
+import WorkspaceDrawer from "./components/WorkspaceDrawer";
 import {
   createSlot, drawingStorageKey, fetchCloudStates, saveCloudState,
   listLocalSaves, putLocalSave, removeLocalSave, deleteCloudState,
@@ -19,7 +20,8 @@ import {
   metrics,
   openPosition,
   positionRawPnl,
-  quote
+  quote,
+  marginForOrder
 } from "./lib/account";
 import { downloadCsvArchive, listCloudDatasets, saveCsvArchive, type CloudDataset } from "./lib/cloud";
 import { supabase, supabaseConfigured } from "./lib/supabase";
@@ -94,6 +96,9 @@ export default function App() {
   const [saveSlots, setSaveSlots] = useState<SaveSlot[]>([]);
   const [saveStatus, setSaveStatus] = useState("");
   const [saveBusy, setSaveBusy] = useState(false);
+  const [openPanel, setOpenPanel] = useState<"saved" | "library" | null>(null);
+  const [mobileView, setMobileView] = useState<"chart" | "trade" | "history">("chart");
+  const [blotterTab, setBlotterTab] = useState<"open" | "closed">("open");
   const [drawingGeneration, setDrawingGeneration] = useState(0);
   const snapshotRef = useRef<SaveStateSnapshot | null>(null);
   const cloudSavingRef = useRef(false);
@@ -144,6 +149,14 @@ export default function App() {
         : metrics(account, 0, accountConfig, instrument),
     [account, currentCandle, accountConfig, instrument]
   );
+
+  const buyMargin = currentCandle
+    ? marginForOrder("buy", lots, currentCandle.close, accountConfig, instrument) : 0;
+  const sellMargin = currentCandle
+    ? marginForOrder("sell", lots, currentCandle.close, accountConfig, instrument) : 0;
+  const estimatedSpreadCost = currentCandle
+    ? (quote(currentCandle.close, instrument).ask - quote(currentCandle.close, instrument).bid)
+      * instrument.contractSize * lots : 0;
 
   const marginWarning =
     accountMetrics.marginLevel !== null && accountMetrics.marginLevel <= accountConfig.marginCallLevel;
@@ -637,107 +650,158 @@ export default function App() {
   };
 
   return (
-    <main className="app">
+    <main className="app" data-mobile-view={mobileView}>
       <header className="topbar">
-        <div className="brand">
-          <span className="brand-mark">C</span>
+        <div className="brand" aria-label="Calyze historical trading terminal">
+          <span className="brand-mark" aria-hidden="true">C</span>
           <div>
             <strong>Calyze</strong>
-            <small>Historical Trading Lab</small>
+            <small>REPLAY TERMINAL</small>
           </div>
         </div>
-
-        <div className="dataset">
-          <button className="ghost" onClick={() => fileRef.current?.click()}>
-            Import M1 CSV
+        <div className="header-context" title={status}>
+          <span className="header-context-label">{baseCandles.length ? instrument.symbol : "Historical analysis"}</span>
+          <span>{baseCandles.length ? datasetName : "Offline-first · No live market feed"}</span>
+        </div>
+        <nav className="top-actions" aria-label="Workspace actions">
+          <button className="header-action" onClick={() => fileRef.current?.click()}
+            title="Import cTrader M1 historical CSV">
+            <span aria-hidden="true">↑</span> Import
           </button>
-          <input
-            ref={fileRef}
-            hidden
-            type="file"
-            accept=".csv,text/csv"
-            onChange={(e) => e.target.files?.[0] && onImport(e.target.files[0])}
-          />
-          <span title={status}>{status}</span>
-        </div>
-
-        <div className="top-actions">
-          {supabaseConfigured ? (
-            session ? (
-              <>
-                <button className="ghost" onClick={() => pendingFile && void persistFile(pendingFile)}
-                  disabled={!pendingFile || cloudBusy || savedFileRef.current === pendingFile}>
-                  {cloudBusy ? "Syncing…" : "Retry / Save"}
-                </button>
-                <button className="ghost" onClick={() => supabase?.auth.signOut()}>
-                  Sign out
-                </button>
-              </>
-            ) : (
-              <span className="cloud-off">Supabase ready · sign in below</span>
-            )
-          ) : (
-            <span className="cloud-off">Local mode</span>
-          )}
-        </div>
+          <button className="header-action" onClick={() => setOpenPanel("saved")}
+            aria-label={"Open saved backtests, " + saveSlots.length + " available"}>
+            <span aria-hidden="true">▣</span> Saves
+            {saveSlots.length > 0 && <span className="action-count">{saveSlots.length}</span>}
+          </button>
+          <button className="header-action" onClick={() => setOpenPanel("library")}
+            title="Supabase cloud library and authentication">
+            <span className={"sync-indicator " + (session ? "online" : "")} aria-hidden="true" />
+            {session ? "Library" : "Cloud"}
+          </button>
+        </nav>
+        <input ref={fileRef} hidden type="file" accept=".csv,text/csv"
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) void onImport(file);
+            event.target.value = "";
+          }} />
       </header>
 
-      {supabaseConfigured && !session && (
-        <section className="auth-banner">
-          <strong>Cloud backup</strong>
-          <span>Sign in to automatically save every imported CSV and open it on other devices.</span>
-          <input type="email" autoComplete="email" placeholder="Email" value={email}
-            onChange={(event) => setEmail(event.target.value)} />
-          <input type="password" autoComplete="current-password" placeholder="Password" value={password}
-            onChange={(event) => setPassword(event.target.value)} />
-          <button onClick={() => void auth("signin")}>Sign in</button>
-          <button onClick={() => void auth("signup")}>Sign up</button>
-        </section>
+      {baseCandles.length > 0 && (
+        <>
+          <section className="workspace-stats" aria-label="Simulated account summary">
+            <div className="workspace-stat"><span>Account</span><strong>{accountName}</strong></div>
+            <div className="workspace-stat"><span>Balance</span><strong>{accountConfig.currency} {money(accountMetrics.balance)}</strong></div>
+            <div className="workspace-stat"><span>Equity</span>
+              <strong className={accountMetrics.equity < accountMetrics.balance ? "negative" : "positive"}>
+                {money(accountMetrics.equity)}
+              </strong>
+            </div>
+            <div className="workspace-stat"><span>Free margin</span><strong>{money(accountMetrics.freeMargin)}</strong></div>
+            <div className="workspace-stat"><span>Margin level</span>
+              <strong className={marginWarning ? "caution" : ""}>
+                {accountMetrics.marginLevel === null ? "—" : money(accountMetrics.marginLevel) + "%"}
+              </strong>
+            </div>
+            <div className="workspace-stat stat-time"><span>Replay · UTC</span>
+              <strong>{dateTime(currentTime)}</strong>
+            </div>
+          </section>
+          <nav className="mobile-workspace-nav" aria-label="Mobile workspace">
+            <button aria-pressed={mobileView === "chart"} className={mobileView === "chart" ? "selected" : ""}
+              onClick={() => setMobileView("chart")}>▤ <span>Chart</span></button>
+            <button aria-pressed={mobileView === "trade"} className={mobileView === "trade" ? "selected" : ""}
+              onClick={() => setMobileView("trade")}>⇅ <span>Trade</span></button>
+            <button aria-pressed={mobileView === "history"} className={mobileView === "history" ? "selected" : ""}
+              onClick={() => setMobileView("history")}>▦ <span>History</span></button>
+          </nav>
+        </>
       )}
 
-      {session && (
-        <section className="cloud-shelf">
-          <div className="cloud-heading">
-            <strong>Supabase library · {cloudDatasets.length} dataset(s)</strong>
-            <button className="ghost" onClick={() => void refreshCloud()}>Refresh</button>
-            {pendingFile && savedFileRef.current !== pendingFile && !cloudBusy && (
-              <button onClick={() => void persistFile(pendingFile)}>Retry cloud backup</button>
-            )}
-          </div>
-          {cloudProgress && <div className="cloud-sync-status">{cloudProgress}</div>}
-          <div className="cloud-files">
-            {cloudDatasets.map((dataset) => (
-              <button key={dataset.id} className="cloud-file" disabled={cloudBusy}
-                onClick={() => void openCloudDataset(dataset)}>
-                <strong>{dataset.symbol} · {dataset.name}</strong>
-                <span>{Number(dataset.row_count).toLocaleString()} M1 candles · {new Date(dataset.created_at).toLocaleDateString()}</span>
-                <small>Open from Supabase ↗</small>
-              </button>
-            ))}
-            {!cloudDatasets.length && <span className="cloud-empty">No completed cloud backups yet. Import a CSV to begin.</span>}
-          </div>
-        </section>
+      {status && status !== "Import an M1 CSV exported from cTrader." && (
+        <div className="workspace-feedback" role="status" title={status}>
+          <span aria-hidden="true">●</span> {status}
+        </div>
       )}
 
-      {!session && cloudProgress && (
-        <div className="cloud-sync-status standalone">{cloudProgress}</div>
+      {openPanel === "saved" && (
+        <WorkspaceDrawer title="Save states" subtitle="Resume a replay session or manage account checkpoints."
+          onClose={() => setOpenPanel(null)}>
+          <SaveStatePanel
+            accountName={accountName} onAccountNameChange={setAccountName}
+            saveName={saveName} onSaveNameChange={setSaveName}
+            slots={saveSlots} hasDataset={Boolean(datasetIdentity)}
+            cloudReady={Boolean(session && datasetIdentity?.cloudDatasetId)}
+            busy={saveBusy} status={saveStatus}
+            onSave={() => void saveCheckpoint("manual", saveName)}
+            onNewAccount={newAccount}
+            onResume={(slot) => { setOpenPanel(null); void restoreSlot(slot); }}
+            onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
+            onDelete={(slot) => void deleteSlot(slot)}
+            onRefresh={() => void refreshSaves()}
+          />
+        </WorkspaceDrawer>
       )}
 
-      <SaveStatePanel
-        accountName={accountName} onAccountNameChange={setAccountName}
-        saveName={saveName} onSaveNameChange={setSaveName}
-        slots={saveSlots}
-        hasDataset={Boolean(datasetIdentity)}
-        cloudReady={Boolean(session && datasetIdentity?.cloudDatasetId)}
-        busy={saveBusy}
-        status={saveStatus}
-        onSave={() => void saveCheckpoint("manual", saveName)}
-        onNewAccount={newAccount}
-        onResume={(slot) => void restoreSlot(slot)}
-        onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
-        onDelete={(slot) => void deleteSlot(slot)}
-        onRefresh={() => void refreshSaves()}
-      />
+      {openPanel === "library" && (
+        <WorkspaceDrawer title="Cloud & datasets"
+          subtitle="Import, store and reopen historical market data across your devices."
+          onClose={() => setOpenPanel(null)}>
+          {!supabaseConfigured ? (
+            <p className="drawer-explainer">Cloud storage is not configured. Local CSV imports and save states remain available on this device.</p>
+          ) : session ? (
+            <>
+              <div className="drawer-account">
+                <span>Signed in as <strong>{session.user.email}</strong></span>
+                <button className="ghost" onClick={() => supabase?.auth.signOut()}>Sign out</button>
+              </div>
+              <div className="drawer-actions">
+                <button onClick={() => fileRef.current?.click()}>↑ Import another CSV</button>
+                <button onClick={() => void refreshCloud()}>↻ Refresh library</button>
+                {pendingFile && savedFileRef.current !== pendingFile && (
+                  <button disabled={cloudBusy} onClick={() => void persistFile(pendingFile)}>
+                    {cloudBusy ? "Uploading…" : "Retry cloud backup"}
+                  </button>
+                )}
+              </div>
+              <div className="drawer-section-heading">
+                <strong>Cloud datasets</strong>
+                <span>{cloudDatasets.length} archived</span>
+              </div>
+              <div className="library-dataset-list">
+                {cloudDatasets.map((dataset) => (
+                  <button key={dataset.id} className="library-dataset" disabled={cloudBusy}
+                    onClick={() => { setOpenPanel(null); void openCloudDataset(dataset); }}>
+                    <span className="library-dataset-icon">▤</span>
+                    <span className="library-dataset-text">
+                      <strong>{dataset.symbol} · {dataset.name}</strong>
+                      <small>{Number(dataset.row_count).toLocaleString()} candles ·
+                        {new Date(dataset.created_at).toLocaleDateString()}</small>
+                    </span>
+                    <span aria-hidden="true">↗</span>
+                  </button>
+                ))}
+                {!cloudDatasets.length && (
+                  <p className="drawer-explainer">Your library is empty. Import an M1 CSV to start a cloud archive.</p>
+                )}
+              </div>
+            </>
+          ) : (
+            <div className="drawer-signin">
+              <p className="drawer-explainer">Sign in to save your WTI history and backtest states to Supabase.</p>
+              <label>Email <input type="email" autoComplete="email" value={email}
+                onChange={(e) => setEmail(e.target.value)} placeholder="Email address" /></label>
+              <label>Password <input type="password" autoComplete="current-password" value={password}
+                onChange={(e) => setPassword(e.target.value)} placeholder="Password" /></label>
+              <div className="drawer-actions">
+                <button className="primary" onClick={() => void auth("signin")}>Sign in</button>
+                <button onClick={() => void auth("signup")}>Create account</button>
+              </div>
+            </div>
+          )}
+          {cloudProgress && <p className="drawer-progress" role="status">{cloudProgress}</p>}
+        </WorkspaceDrawer>
+      )}
 
       {!baseCandles.length ? (
         <section className="empty-state">
