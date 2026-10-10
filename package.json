@@ -5,9 +5,9 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc --noEmit -p tsconfig.app.json && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --pretty false",
+    "typecheck": "tsc --noEmit -p tsconfig.app.json --pretty false",
     "test": "vitest run",
     "cap:sync": "npm run build && cap sync",
     "android": "npm run cap:sync && cap open android",
