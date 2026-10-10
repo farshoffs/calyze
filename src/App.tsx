@@ -2,6 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { Session } from "@supabase/supabase-js";
 import TradingChart from "./components/TradingChart";
 import InstrumentDetails from "./components/InstrumentDetails";
+import SaveStatePanel from "./components/SaveStatePanel";
+import {
+  createSlot, drawingStorageKey, fetchCloudStates, saveCloudState,
+  listLocalSaves, putLocalSave, removeLocalSave, deleteCloudState,
+  mergedSaves, makeDatasetIdentity, snapshotsMatch, isSnapshot,
+  readStoredDrawings, restoreStoredDrawings, type DatasetIdentity,
+  type SaveSlot, type SaveStateSnapshot
+} from "./lib/saveStates";
 import { parseCtraderCsv } from "./lib/csv";
 import { aggregateCandles, upperBoundTime, TIMEFRAME_SECONDS } from "./lib/timeframes";
 import {
@@ -79,6 +87,20 @@ export default function App() {
   const [cloudBusy, setCloudBusy] = useState(false);
   const uploadingFileRef = useRef<File | null>(null);
   const savedFileRef = useRef<File | null>(null);
+
+  const [datasetIdentity, setDatasetIdentity] = useState<DatasetIdentity | null>(null);
+  const [accountName, setAccountName] = useState("Account 1");
+  const [saveName, setSaveName] = useState("WTI backtest");
+  const [saveSlots, setSaveSlots] = useState<SaveSlot[]>([]);
+  const [saveStatus, setSaveStatus] = useState("");
+  const [saveBusy, setSaveBusy] = useState(false);
+  const [drawingGeneration, setDrawingGeneration] = useState(0);
+  const snapshotRef = useRef<SaveStateSnapshot | null>(null);
+  const cloudSavingRef = useRef(false);
+  const cloudQueueRef = useRef<SaveSlot[]>([]);
+  const restoringRef = useRef(false);
+  const autosaveIdRef = useRef<string | null>(null);
+  const ownerId = session?.user.id ?? "guest";
 
   const aggregated = useMemo(
     () => (baseCandles.length ? aggregateCandles(baseCandles, timeframe) : []),
@@ -161,8 +183,10 @@ export default function App() {
           Math.min(100, Math.floor(progress.fraction * 100)) + "%");
       });
       const start = preferredReplayIndex(candles);
+      const name = file.name.replace(/\.csv$/i, "");
+      setDatasetIdentity(makeDatasetIdentity(file, candles, name));
       setBaseCandles(candles);
-      setDatasetName(file.name.replace(/\.csv$/i, ""));
+      setDatasetName(name);
       setReplayIndex(start);
       setAccount(initialAccount(accountConfig));
       const spec = instrumentFromImport(file.name);
@@ -184,8 +208,10 @@ export default function App() {
           " → " +
           dateTime(candles[candles.length - 1].time)
       );
+      return candles;
     } catch (error) {
       setStatus(error instanceof Error ? error.message : "CSV import failed.");
+      return null;
     }
   }
 
@@ -285,6 +311,10 @@ export default function App() {
         }
       });
       savedFileRef.current = file;
+      setDatasetIdentity((previous) =>
+        previous && previous.fileName === file.name && previous.sizeBytes === file.size
+          ? { ...previous, cloudDatasetId: id }
+          : previous);
       setCloudProgress("Saved to Supabase successfully · " + id.slice(0, 8) +
         ". Available when you sign in on another device.");
       await refreshCloud();
@@ -314,7 +344,9 @@ export default function App() {
         setCloudProgress("Downloading " + Math.round(done / total * 100) +
           "% (" + done + "/" + total + " compressed chunks)");
       });
-      await onImport(file, false);
+      const loaded = await onImport(file, false);
+      if (!loaded) throw new Error("Could not read the restored dataset.");
+      setDatasetIdentity(makeDatasetIdentity(file, loaded, dataset.name, dataset.id));
       setDatasetName(dataset.name);
       const preset = instrumentFromImport(dataset.original_file_name || dataset.name, dataset.symbol);
       // Older WTI cloud archives may contain the old generic XAU settings.
@@ -336,6 +368,257 @@ export default function App() {
     } finally {
       setCloudBusy(false);
     }
+  }
+
+
+  const refreshSaves = useCallback(async () => {
+    const local = listLocalSaves(ownerId);
+    setSaveSlots(local);
+    if (!session) return;
+    try {
+      const remote = await fetchCloudStates(session.user.id);
+      setSaveSlots(mergedSaves(listLocalSaves(ownerId), remote));
+    } catch (error) {
+      setSaveStatus("Cloud save list unavailable; local checkpoints are still accessible: " +
+        (error instanceof Error ? error.message : String(error)));
+    }
+  }, [ownerId, session?.user.id]);
+
+  useEffect(() => {
+    autosaveIdRef.current = null;
+    void refreshSaves();
+  }, [ownerId, refreshSaves]);
+
+  // Never snapshot the millions of candles. Only their immutable identity,
+  // replay clock, account ledger and small drawing metadata.
+  const currentSnapshot = useMemo<SaveStateSnapshot | null>(() => {
+    if (!datasetIdentity || !currentCandle) return null;
+    return {
+      version: 1,
+      dataset: datasetIdentity,
+      accountName: accountName.trim() || "Account 1",
+      replayIndex, replayTime: currentCandle.time,
+      timeframe, speed, accountConfig, instrument, account,
+      ticket: { lots, stopLoss, takeProfit },
+      drawings: [],
+      savedAt: new Date().toISOString()
+    };
+  }, [datasetIdentity, currentCandle?.time, accountName, replayIndex, timeframe, speed,
+    accountConfig, instrument, account, lots, stopLoss, takeProfit]);
+
+  snapshotRef.current = currentSnapshot;
+
+  const captureSnapshot = useCallback((): SaveStateSnapshot | null => {
+    const snapshot = snapshotRef.current;
+    if (!snapshot) return null;
+    return { ...snapshot,
+      drawings: readStoredDrawings(ownerId, snapshot.dataset.name, snapshot.instrument.symbol),
+      savedAt: new Date().toISOString()
+    };
+  }, [ownerId]);
+
+  const saveCheckpoint = useCallback(async (kind: "auto" | "manual", name?: string, replaceId?: string) => {
+    if (restoringRef.current) return;
+    const snapshot = captureSnapshot();
+    if (!snapshot) {
+      setSaveStatus("Import or open a dataset before saving a backtest.");
+      return;
+    }
+    const id = kind === "auto" ?
+      (autosaveIdRef.current ?? listLocalSaves(ownerId).find((slot) => slot.kind === "auto")?.id ?? crypto.randomUUID()) :
+      (replaceId ?? crypto.randomUUID());
+    if (kind === "auto") autosaveIdRef.current = id;
+    const slot = createSlot(snapshot,
+      kind === "auto" ? "Latest automatic checkpoint" : (name || saveName),
+      kind, id);
+
+    try {
+      putLocalSave(ownerId, slot);
+      setSaveSlots((previous) => mergedSaves([slot], previous.filter((item) => item.id !== slot.id)));
+      if (kind === "manual") setSaveStatus("Saved locally. Preparing cloud sync…");
+    } catch (error) {
+      setSaveStatus("Device backup failed: " +
+        (error instanceof Error ? error.message : String(error)) + ". Try deleting older named saves.");
+      return;
+    }
+
+    if (session?.user.id && slot.snapshot.dataset.cloudDatasetId) {
+      if (cloudSavingRef.current) {
+        if (kind === "manual") {
+          cloudQueueRef.current.push(slot);
+          setSaveStatus("Saved locally; cloud backup queued behind the current sync.");
+        }
+        return;
+      }
+      cloudSavingRef.current = true;
+      try {
+        await saveCloudState(session.user.id, slot);
+        while (cloudQueueRef.current.length) {
+          const pending = cloudQueueRef.current.shift()!;
+          await saveCloudState(session.user.id, pending);
+        }
+        if (kind === "manual" || cloudQueueRef.current.length === 0) {
+          setSaveStatus("Backtest state synced to this device and Supabase.");
+        }
+      } catch (error) {
+        setSaveStatus("Saved on device, but Supabase sync failed: " +
+          (error instanceof Error ? error.message : String(error)));
+      } finally {
+        cloudSavingRef.current = false;
+      }
+    } else if (kind === "manual") {
+      setSaveStatus("Saved on this device. For cross-device resume, sign in and finish the Supabase CSV backup.");
+    }
+  }, [captureSnapshot, ownerId, session?.user.id, saveName]);
+
+  // Passive local autosave every 20 seconds; slower cloud checkpoint cadence
+  // limits requests during accelerated replay.
+  const tickSaveRef = useRef(saveCheckpoint);
+  tickSaveRef.current = saveCheckpoint;
+  useEffect(() => {
+    if (!datasetIdentity) return;
+    let ticks = 0;
+    const timer = window.setInterval(() => {
+      if (restoringRef.current || cloudBusy) return;
+      ticks += 1;
+      if (ticks % 3 === 0) {
+        void tickSaveRef.current("auto");
+      } else {
+        // Locally checkpoint every 20 seconds without uploading continuously.
+        const snapshot = captureSnapshot();
+        if (!snapshot) return;
+        const id = autosaveIdRef.current ?? listLocalSaves(ownerId).find((slot) => slot.kind === "auto")?.id ?? crypto.randomUUID();
+        autosaveIdRef.current = id;
+        try {
+          const slot = createSlot(snapshot, "Latest automatic checkpoint", "auto", id);
+          putLocalSave(ownerId, slot);
+          setSaveSlots((previous) => mergedSaves([slot], previous.filter((entry) => entry.id !== id)));
+        } catch (error) {
+          setSaveStatus("Local auto-save failed: " + String(error));
+        }
+      }
+    }, 20000);
+    return () => window.clearInterval(timer);
+  }, [datasetIdentity?.key, ownerId, captureSnapshot, cloudBusy]);
+
+  // Best-effort synchronous local checkpoint on page/tab close; no cloud claim.
+  useEffect(() => {
+    const onHide = () => {
+      if (restoringRef.current) return;
+      const snapshot = captureSnapshot();
+      if (!snapshot) return;
+      try {
+        const id = autosaveIdRef.current ?? crypto.randomUUID();
+        autosaveIdRef.current = id;
+        putLocalSave(ownerId, createSlot(snapshot, "Latest automatic checkpoint", "auto", id));
+      } catch { /* Browser may deny storage on shutdown; periodic saves remain. */ }
+    };
+    window.addEventListener("pagehide", onHide);
+    return () => window.removeEventListener("pagehide", onHide);
+  }, [captureSnapshot, ownerId]);
+
+  async function restoreSlot(slot: SaveSlot) {
+    if (!isSnapshot(slot.snapshot)) {
+      setSaveStatus("This save state has an unsupported or damaged format.");
+      return;
+    }
+    if (saveBusy) return;
+    setPlaying(false);
+    setSaveBusy(true);
+    restoringRef.current = true;
+    try {
+      const saved = slot.snapshot;
+      let loadedIdentity = datasetIdentity;
+      let candles = baseCandles;
+      if (!snapshotsMatch(loadedIdentity, saved.dataset)) {
+        const sourceId = saved.dataset.cloudDatasetId;
+        if (!sourceId || !session) {
+          throw new Error("The matching source CSV is not open. Import " +
+            saved.dataset.fileName + " first, then click Resume again.");
+        }
+        setSaveStatus("Restoring historical candles from Supabase…");
+        const files = await listCloudDatasets();
+        const source = files.find((entry) => entry.id === sourceId);
+        if (!source) throw new Error("The saved source CSV is not available in your Supabase library.");
+        const file = await downloadCsvArchive(source, (done, total) =>
+          setSaveStatus("Downloading source CSV: " + Math.round(100 * done / total) + "%"));
+        // Parse without modifying the current account or loaded dataset. Validation
+        // must complete before the state transition, or an invalid source would
+        // destructively reset an ongoing backtest.
+        const parsed = await parseCtraderCsv(file, (progress) =>
+          setSaveStatus("Reading restored M1 data: " + Math.round(100 * progress.fraction) + "%"));
+        candles = parsed;
+        loadedIdentity = makeDatasetIdentity(file, parsed, saved.dataset.name, sourceId);
+      }
+      if (!snapshotsMatch(loadedIdentity, saved.dataset)) {
+        throw new Error("Dataset identity mismatch. Open the original CSV to restore this checkpoint safely.");
+      }
+      const correctIndex = candles[saved.replayIndex]?.time === saved.replayTime
+        ? saved.replayIndex
+        : upperBoundTime(candles, saved.replayTime) - 1;
+      if (correctIndex < 0 || candles[correctIndex]?.time !== saved.replayTime) {
+        throw new Error("Saved replay candle is absent from this dataset. Account state left unchanged.");
+      }
+
+      // All checks passed. Swap source candles and ledger together; no future-price
+      // replay steps are executed while changing the save slot.
+      if (candles !== baseCandles) {
+        setBaseCandles(candles);
+        setPendingFile(null);
+      }
+      // Make drawing snapshot available before remounting TradingChart.
+      restoreStoredDrawings(ownerId, saved.dataset.name, saved.instrument.symbol, saved.drawings);
+      setDatasetName(saved.dataset.name);
+      if (!loadedIdentity) throw new Error("No source dataset available for restore.");
+      setDatasetIdentity({ ...loadedIdentity, cloudDatasetId: saved.dataset.cloudDatasetId || loadedIdentity.cloudDatasetId });
+      setReplayIndex(correctIndex);
+      setTimeframe(saved.timeframe);
+      setSpeed(saved.speed);
+      setAccountConfig(saved.accountConfig);
+      setInstrument(saved.instrument);
+      setAccount(saved.account);
+      setLots(saved.ticket.lots);
+      setStopLoss(saved.ticket.stopLoss);
+      setTakeProfit(saved.ticket.takeProfit);
+      setAccountName(saved.accountName);
+      setSaveName(slot.kind === "manual" ? slot.name : saved.accountName + " checkpoint");
+      setDrawingGeneration((n) => n + 1);
+      setSaveStatus("Resumed " + slot.name + " at " +
+        new Date(saved.replayTime * 1000).toISOString().replace("T", " ").slice(0, 16) +
+        " UTC. Replay is paused; account and orders restored.");
+      setStatus("Restored named backtest session: " + slot.name);
+    } catch (error) {
+      setSaveStatus("Restore unavailable: " +
+        (error instanceof Error ? error.message : String(error)));
+    } finally {
+      setSaveBusy(false);
+      window.setTimeout(() => { restoringRef.current = false; }, 1000);
+    }
+  }
+
+  async function deleteSlot(slot: SaveSlot) {
+    if (!window.confirm("Delete '" + slot.name + "'? This cannot be undone.")) return;
+    setSaveBusy(true);
+    try {
+      if (session) await deleteCloudState(session.user.id, slot.id);
+      removeLocalSave(ownerId, slot.id);
+      setSaveSlots((previous) => previous.filter((entry) => entry.id !== slot.id));
+      setSaveStatus("Deleted " + slot.name + ".");
+    } catch (error) {
+      setSaveStatus("Could not delete save: " + String(error));
+    } finally {
+      setSaveBusy(false);
+    }
+  }
+
+  function newAccount() {
+    if (!datasetIdentity || !window.confirm(
+      "Start another simulated account at this candle? Save the current account as a named slot first."
+    )) return;
+    setPlaying(false);
+    setAccount(initialAccount(accountConfig));
+    setAccountName("Account " + Math.floor(Date.now() / 1000).toString().slice(-5));
+    setSaveStatus("New trading account started. Use Save now to preserve it separately.");
   }
 
   const updateAccount = (key: keyof AccountConfig, value: string) =>
@@ -440,6 +723,22 @@ export default function App() {
         <div className="cloud-sync-status standalone">{cloudProgress}</div>
       )}
 
+      <SaveStatePanel
+        accountName={accountName} onAccountNameChange={setAccountName}
+        saveName={saveName} onSaveNameChange={setSaveName}
+        slots={saveSlots}
+        hasDataset={Boolean(datasetIdentity)}
+        cloudReady={Boolean(session && datasetIdentity?.cloudDatasetId)}
+        busy={saveBusy}
+        status={saveStatus}
+        onSave={() => void saveCheckpoint("manual", saveName)}
+        onNewAccount={newAccount}
+        onResume={(slot) => void restoreSlot(slot)}
+        onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
+        onDelete={(slot) => void deleteSlot(slot)}
+        onRefresh={() => void refreshSaves()}
+      />
+
       {!baseCandles.length ? (
         <section className="empty-state">
           <div className="hero-card">
@@ -508,7 +807,8 @@ export default function App() {
                     }} />
                 </div>
               </div>
-              <TradingChart candles={visibleAggregated} symbol={instrument.symbol}
+              <TradingChart key={datasetName + ":" + instrument.symbol + ":" + drawingGeneration}
+                candles={visibleAggregated} symbol={instrument.symbol}
                 tickSize={instrument.tickSize} priceDigits={instrument.digits ?? 2}
                 workspaceKey={datasetName + ":" + instrument.symbol} userId={session?.user.id} />
             </div>
