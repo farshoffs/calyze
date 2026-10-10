@@ -133,7 +133,7 @@ export function removeLocalSave(ownerId: string, id: string): void {
 }
 
 export function createSlot(
-  snapshot: SaveStateSnapshot, name: string, kind: SaveSlot["kind"], id = crypto.randomUUID()
+  snapshot: SaveStateSnapshot, name: string, kind: SaveSlot["kind"], id: string = crypto.randomUUID()
 ): SaveSlot {
   const updatedAt = new Date().toISOString();
   return { id, name: name.trim().slice(0,100) || "Backtest", kind,
