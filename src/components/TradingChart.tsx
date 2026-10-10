@@ -133,6 +133,7 @@ export default function TradingChart({
     historyRef.current = { past: [], future: [] };
     setRevision(0);
 
+    const hasLocalDrawingSnapshot = localStorage.getItem(storeKey) !== null;
     const local = storedDrawings(storeKey);
     setItems(local);
     setReady(true);
@@ -153,7 +154,7 @@ export default function TradingChart({
         return;
       }
       const remote = parseDrawings(data?.[0]?.drawings);
-      if (remote.length && drawingRef.current.length === 0) {
+      if (!hasLocalDrawingSnapshot && remote.length && drawingRef.current.length === 0) {
         setItems(remote);
         setCloudInfo("Drawings restored from Supabase");
       }
