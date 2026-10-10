@@ -24,10 +24,11 @@ export function validReplayLedger(value: unknown): value is ReplayLedgerData {
     Number.isSafeInteger(point.index) && point.index >= 0 &&
     point.account && Number.isFinite(point.account.balance) &&
     Array.isArray(point.account.positions) && Array.isArray(point.account.history);
+  const actions = ledger.actions;
   return check(ledger.origin) &&
-    ledger.actions.every((point) => check(point)) &&
-    ledger.actions.every((point, i) => point.index >= ledger.origin!.index &&
-      (i === 0 || point.index >= ledger.actions[i - 1].index));
+    actions.every((point) => check(point)) &&
+    actions.every((point, i) => point.index >= ledger.origin!.index &&
+      (i === 0 || point.index >= actions[i - 1].index));
 }
 
 /**
@@ -158,7 +159,9 @@ export class ReplayLedger {
     let lastStored = checkpoints[checkpoints.length - 1]?.index ?? start;
     for (let i = start + 1; i <= bounded; i += 1) {
       if (account.positions.length === 0) {
-        account = { ...account, lastBarTime: candles[i].time };
+        // Nothing can execute or accrue without open positions. Jump directly.
+        account = { ...account, lastBarTime: candles[bounded].time };
+        break;
       } else {
         account = advanceAccount(account, candles[i], config, instrument);
       }
