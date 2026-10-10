@@ -99,6 +99,7 @@ export default function App() {
   const [openPanel, setOpenPanel] = useState<"saved" | "library" | null>(null);
   const [mobileView, setMobileView] = useState<"chart" | "trade" | "history">("chart");
   const [blotterTab, setBlotterTab] = useState<"open" | "closed">("open");
+  const [seekTarget, setSeekTarget] = useState(0);
   const [drawingGeneration, setDrawingGeneration] = useState(0);
   const snapshotRef = useRef<SaveStateSnapshot | null>(null);
   const cloudSavingRef = useRef(false);
@@ -112,6 +113,7 @@ export default function App() {
     [baseCandles, timeframe]
   );
 
+  useEffect(() => setSeekTarget(replayIndex), [replayIndex]);
   const currentCandle = baseCandles[replayIndex];
   const currentTime = currentCandle?.time ?? 0;
   const visibleAggregated = useMemo(() => {
@@ -202,6 +204,7 @@ export default function App() {
       setDatasetName(name);
       setReplayIndex(start);
       setAccount(initialAccount(accountConfig));
+      setMobileView("chart");
       const spec = instrumentFromImport(file.name);
       setInstrument(spec);
       setLots(spec.minLot);
@@ -241,8 +244,21 @@ export default function App() {
     setAccount(initialAccount(accountConfig));
   }
 
+  function confirmSeek(): boolean {
+    if (!account.positions.length && !account.history.length) return true;
+    return window.confirm("Jumping through history resets the simulated account and trade history. Save a checkpoint before continuing?");
+  }
+
+  function applySeek(index: number) {
+    if (!baseCandles.length || !confirmSeek()) return;
+    setPlaying(false);
+    setReplayIndex(Math.max(0, Math.min(baseCandles.length - 1, index)));
+    setAccount(initialAccount(accountConfig));
+    setStatus("Replay moved. Trading account reset to prevent carrying orders across skipped candles.");
+  }
+
   function jumpToDate(value: string) {
-    if (!value || !baseCandles.length) return;
+    if (!value || !baseCandles.length || !confirmSeek()) return;
     const utc = Date.parse(value + "T00:00:00Z") / 1000;
     if (!Number.isFinite(utc)) return;
     const index = Math.min(baseCandles.length - 1, upperBoundTime(baseCandles, utc - 1));
@@ -600,6 +616,8 @@ export default function App() {
         new Date(saved.replayTime * 1000).toISOString().replace("T", " ").slice(0, 16) +
         " UTC. Replay is paused; account and orders restored.");
       setStatus("Restored named backtest session: " + slot.name);
+      setMobileView("chart");
+      setOpenPanel(null);
     } catch (error) {
       setSaveStatus("Restore unavailable: " +
         (error instanceof Error ? error.message : String(error)));
@@ -735,7 +753,7 @@ export default function App() {
             busy={saveBusy} status={saveStatus}
             onSave={() => void saveCheckpoint("manual", saveName)}
             onNewAccount={newAccount}
-            onResume={(slot) => { setOpenPanel(null); void restoreSlot(slot); }}
+            onResume={(slot) => void restoreSlot(slot)}
             onOverwrite={(slot) => void saveCheckpoint("manual", slot.name, slot.id)}
             onDelete={(slot) => void deleteSlot(slot)}
             onRefresh={() => void refreshSaves()}
@@ -829,46 +847,63 @@ export default function App() {
           <section className="terminal">
             <div className="chart-column">
               <div className="marketbar">
-                <div className="timeframes">
-                  {timeframes.map((tf) => (
-                    <button
-                      key={tf}
-                      className={tf === timeframe ? "active" : ""}
-                      onClick={() => setTimeframe(tf)}
-                    >
-                      {tf}
-                    </button>
-                  ))}
-                </div>
-                <div className="replay-controls">
-                  <button onClick={jumpToStart}>↤</button>
-                  <button onClick={() => replayIndex > 0 && setReplayIndex((i) => i - 1)}>‹</button>
-                  <button className="play" onClick={() => setPlaying((value) => !value)}>
-                    {playing ? "Pause" : "Replay"}
-                  </button>
-                  <button onClick={stepOnce}>›</button>
-                  <select value={speed} onChange={(e) => setSpeed(Number(e.target.value))}>
-                    {[1, 2, 4, 8, 16, 25].map((item) => (
-                      <option key={item} value={item}>{item}×</option>
+                <div className="marketbar-primary">
+                  <div className="timeframes" aria-label="Chart timeframe">
+                    {timeframes.map((tf) => (
+                      <button key={tf} aria-pressed={tf === timeframe}
+                        className={tf === timeframe ? "active" : ""}
+                        onClick={() => setTimeframe(tf)}>{tf}</button>
                     ))}
-                  </select>
-                  <span className="clock">{dateTime(currentCandle.time)}</span>
-                  <label className="jump-date-control" title="Jump to a historical date (resets account)">
-                    Date
+                  </div>
+                  <div className="replay-controls" aria-label="Replay controls">
+                    <button title="Restart from first candle in 2026" aria-label="Restart replay"
+                      onClick={() => { if (confirmSeek()) jumpToStart(); }}>↤</button>
+                    <button title="Previous M1 candle" aria-label="Previous candle"
+                      disabled={replayIndex <= 0} onClick={() => {
+                        if (!account.positions.length && !account.history.length) {
+                          setPlaying(false);
+                          setReplayIndex((index) => Math.max(0, index - 1));
+                        } else {
+                          applySeek(replayIndex - 1);
+                        }
+                      }}>‹</button>
+                    <button className="play" aria-label={playing ? "Pause replay" : "Play replay"}
+                      aria-pressed={playing} onClick={() => setPlaying((value) => !value)}>
+                      {playing ? "Ⅱ Pause" : "▶ Play"}
+                    </button>
+                    <button title="Next M1 candle" aria-label="Next candle" onClick={stepOnce}
+                      disabled={replayIndex >= baseCandles.length - 1}>›</button>
+                    <label className="speed-select" title="Replay speed">
+                      <span>Speed</span>
+                      <select value={speed} aria-label="Replay speed"
+                        onChange={(e) => setSpeed(Number(e.target.value))}>
+                        {[1, 2, 4, 8, 16, 25].map((item) => (
+                          <option key={item} value={item}>{item}×</option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                </div>
+                <div className="marketbar-secondary">
+                  <label className="jump-date-control" title="Jump to historical date (resets account)">
+                    Jump to
                     <input type="date"
                       min={new Date(baseCandles[0].time * 1000).toISOString().slice(0, 10)}
                       max={new Date(baseCandles[baseCandles.length - 1].time * 1000).toISOString().slice(0, 10)}
                       value={new Date(currentTime * 1000).toISOString().slice(0, 10)}
                       onChange={(event) => jumpToDate(event.target.value)} />
                   </label>
-                  <input className="replay-seek" type="range" min="0"
-                    max={Math.max(0, baseCandles.length - 1)} value={replayIndex}
-                    title="Seek through entire historical dataset (resets open trades)"
-                    onChange={(event) => {
-                      setPlaying(false);
-                      setReplayIndex(Number(event.target.value));
-                      setAccount(initialAccount(accountConfig));
-                    }} />
+                  <label className="timeline-seek">
+                    <span>Timeline</span>
+                    <input type="range" min="0" max={baseCandles.length - 1}
+                      aria-label="Preview historical candle position" value={seekTarget}
+                      onChange={(event) => setSeekTarget(Number(event.target.value))} />
+                  </label>
+                  <button className="timeline-apply" onClick={() => applySeek(seekTarget)}
+                    disabled={seekTarget === replayIndex}>Go</button>
+                  <time className="clock" dateTime={new Date(currentTime * 1000).toISOString()}>
+                    {dateTime(currentTime)} UTC
+                  </time>
                 </div>
               </div>
               <TradingChart key={datasetName + ":" + instrument.symbol + ":" + drawingGeneration}
