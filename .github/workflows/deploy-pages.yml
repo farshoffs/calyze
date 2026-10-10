@@ -26,6 +26,9 @@ jobs:
       - run: npm run typecheck
       - run: npm test
       - run: npm run build
+        env:
+          VITE_SUPABASE_URL: https://aesfrxhdecirovhmqysn.supabase.co
+          VITE_SUPABASE_PUBLISHABLE_KEY: sb_publishable_qEmvk9bGPxolbeWq78_Zbw_7l6iekJW
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
