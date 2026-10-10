@@ -16,6 +16,8 @@ import DrawingShape, { type PlotPoint } from "./DrawingShape";
 interface Props {
   candles: Candle[];
   symbol: string;
+  tickSize?: number;
+  priceDigits?: number;
   workspaceKey: string;
   userId?: string;
   followLatest?: boolean;
@@ -39,7 +41,7 @@ function storedDrawings(key: string): Drawing[] {
 }
 
 export default function TradingChart({
-  candles, symbol, workspaceKey, userId, followLatest = true
+  candles, symbol, workspaceKey, userId, priceDigits = 2, tickSize = 0.01, followLatest = true
 }: Props) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<SVGSVGElement | null>(null);
@@ -250,6 +252,12 @@ export default function TradingChart({
       sma50Ref.current = null;
     };
   }, []);
+
+  useEffect(() => {
+    seriesRef.current?.applyOptions({
+      priceFormat: { type: "price", precision: priceDigits, minMove: tickSize }
+    });
+  }, [priceDigits, tickSize]);
 
   useEffect(() => {
     const chart = chartRef.current;

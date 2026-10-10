@@ -10,15 +10,42 @@ export interface Candle {
   volume: number;
 }
 
+export interface SessionWindow {
+  start: string;
+  end: string;
+}
+export type SessionSchedule = Partial<Record<"Monday" | "Tuesday" | "Wednesday" | "Thursday" | "Friday" | "Saturday" | "Sunday", SessionWindow>>;
+
 export interface InstrumentSpec {
   symbol: string;
   contractSize: number;
   tickSize: number;
+  /** CSV candles can be bid-based (USOIL.S) or synthetic mid-based (legacy). */
+  chartMode?: "bid" | "mid";
+  digits?: number;
+  tickValue?: number;
+  /** M1 OHLC contains no historical ask quotes; spread is an explicit modeling assumption. */
   spread: number;
+  spreadMode?: "floating" | "fixed";
   commissionPerLotRoundTurn: number;
   minLot: number;
   maxLot: number;
   lotStep: number;
+  volumeLimit?: number;
+  stopsLevelPoints?: number;
+  marginCurrency?: string;
+  profitCurrency?: string;
+  marginCalculation?: "notional";
+  swapCurrency?: string;
+  swapLong?: number;
+  swapShort?: number;
+  swapMultipliers?: Partial<Record<number, number>>;
+  /** Rollover time used for historical simulation (not inferred from screenshots). */
+  swapRolloverUtcHour?: number;
+  /** Broker-server time offset from UTC; null means trading-session validation is disabled. */
+  serverUtcOffsetHours?: number | null;
+  quoteSessions?: SessionSchedule;
+  tradeSessions?: SessionSchedule;
 }
 
 export interface AccountConfig {
@@ -42,6 +69,7 @@ export interface Position {
   rawPnl?: number;
   netPnl?: number;
   commissionPaid: number;
+  swapAccrued?: number;
   exitReason?: ExitReason;
 }
 
@@ -49,6 +77,7 @@ export interface AccountState {
   balance: number;
   positions: Position[];
   history: Position[];
+  lastBarTime?: number;
 }
 
 export interface AccountMetrics {
@@ -58,6 +87,7 @@ export interface AccountMetrics {
   freeMargin: number;
   marginLevel: number | null;
   floatingPnl: number;
+  swaps: number;
 }
 
 export type Timeframe = "M1" | "M5" | "M15" | "M30" | "H1" | "H4" | "D1";
