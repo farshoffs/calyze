@@ -61,7 +61,7 @@ describe("Save State / Resume Backtest", () => {
     const s = snapshot();
     expect(isSnapshot(s)).toBe(true);
     const serialized = JSON.stringify(s);
-    expect(serialized).not.toContain("338470633,");
+    expect(JSON.parse(serialized)).not.toHaveProperty("candles");
     const read = JSON.parse(serialized) as SaveStateSnapshot;
     expect(read.replayTime).toBe(candles[1].time);
     expect(read.account.history[0].netPnl).toBe(7);
