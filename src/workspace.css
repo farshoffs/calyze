@@ -312,3 +312,12 @@ summary:focus-visible, .workspace-drawer :focus-visible {
 @media(prefers-reduced-motion: reduce) {
   *,*::before,*::after { scroll-behavior:auto !important; transition:none !important; }
 }
+
+.view-open-orders {
+  display:block;width:100%;text-align:center;min-height:34px;margin:-3px 0 12px;
+  border:1px solid #314a64;background:#172638;color:#a8d5ff;font-size:11px;font-weight:700;
+}
+.view-open-orders:hover { background:#1c3958; }
+@media(max-width:900px) {
+  .view-open-orders { min-height:44px;font-size:13px; }
+}
