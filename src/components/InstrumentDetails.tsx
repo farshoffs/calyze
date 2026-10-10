@@ -39,7 +39,7 @@ export default function InstrumentDetails({ instrument: spec, account, chartPric
   const format = (n: number) => Number.isFinite(n) ? n.toFixed(2) : "—";
 
   return (
-    <details className="spec-card" open={isOil ? true : undefined}>
+    <details className="spec-card">
       <summary><strong>{spec.symbol}</strong> · Contract specification</summary>
       <div className="spec-list">
         <SpecRow label="Instrument" value={isOil ? "Crude Oil (WTI)" : spec.symbol} />
