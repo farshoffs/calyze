@@ -923,7 +923,7 @@ export default function App() {
                     <button title="Restart from first candle in 2026" aria-label="Restart replay"
                       disabled={seeking} onClick={jumpToStart}>↤</button>
                     <button title="Previous M1 candle" aria-label="Previous candle"
-                      disabled={replayIndex <= 0} disabled={seeking || replayIndex <= 0}
+                      disabled={seeking || replayIndex <= 0}
                       onClick={() => applySeek(replayIndex - 1)}>‹</button>
                     <button className="play" aria-label={playing ? "Pause replay" : "Play replay"}
                       aria-pressed={playing} disabled={seeking} onClick={() => setPlaying((value) => !value)}>
