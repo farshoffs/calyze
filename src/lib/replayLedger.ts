@@ -157,7 +157,7 @@ export class ReplayLedger {
     const steps = bounded - start;
     let lastStored = checkpoints[checkpoints.length - 1]?.index ?? start;
     for (let i = start + 1; i <= bounded; i += 1) {
-      if (account.positions.length === 0 && !account.lastBarTime) {
+      if (account.positions.length === 0) {
         account = { ...account, lastBarTime: candles[i].time };
       } else {
         account = advanceAccount(account, candles[i], config, instrument);
