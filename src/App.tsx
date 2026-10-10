@@ -232,6 +232,8 @@ export default function App() {
   }
 
   function resetAccount() {
+    if ((account.positions.length || account.history.length) &&
+      !window.confirm("Reset this account? Open and closed trades will be cleared. Save a checkpoint first.")) return;
     setPlaying(false);
     setAccount(initialAccount(accountConfig));
     setStatus("Trading account reset to initial balance.");
@@ -731,7 +733,7 @@ export default function App() {
             <button aria-pressed={mobileView === "trade"} className={mobileView === "trade" ? "selected" : ""}
               onClick={() => setMobileView("trade")}>⇅ <span>Trade</span></button>
             <button aria-pressed={mobileView === "history"} className={mobileView === "history" ? "selected" : ""}
-              onClick={() => setMobileView("history")}>▦ <span>History</span></button>
+              onClick={() => { setBlotterTab("closed"); setMobileView("history"); }}>▦ <span>History</span></button>
           </nav>
         </>
       )}
@@ -912,12 +914,22 @@ export default function App() {
                 workspaceKey={datasetName + ":" + instrument.symbol} userId={session?.user.id} />
             </div>
 
-            <aside className="trade-panel">
+            <aside className="trade-panel" aria-label="Manual trading ticket">
+              <div className="ticket-heading">
+                <span>MANUAL ORDER</span>
+                <strong>{instrument.symbol}</strong>
+              </div>
               <div className="quote-card">
-                <small>{instrument.symbol}</small>
-                <strong>{Number(currentCandle.close).toFixed(instrument.digits ?? 2)}</strong>
-                <span>{timeframe} · candle {replayIndex + 1}/{baseCandles.length} · chart {instrument.chartMode === "bid" ? "BID" : "MID"}</span>
-                <small className="quote-ask">Modelled ask: {quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</small>
+                <div className="quote-pair">
+                  <div><span>SELL · BID</span><strong className="negative">
+                    {quote(currentCandle.close, instrument).bid.toFixed(instrument.digits ?? 2)}
+                  </strong></div>
+                  <div><span>BUY · ASK</span><strong className="positive">
+                    {quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}
+                  </strong></div>
+                </div>
+                <small>{timeframe} · {instrument.chartMode === "bid" ? "Bid" : "Mid"} chart ·
+                  M1 {replayIndex + 1}/{baseCandles.length}</small>
               </div>
 
               <div className="field-row">
@@ -935,9 +947,19 @@ export default function App() {
                 </div>
               ) : null}
 
+              <div className="order-estimates">
+                <div><span>Buy margin</span><strong>{money(buyMargin)} {accountConfig.currency}</strong></div>
+                <div><span>Sell margin</span><strong>{money(sellMargin)} {accountConfig.currency}</strong></div>
+                <div><span>Estimated spread cost</span><strong>{money(estimatedSpreadCost)} {accountConfig.currency}</strong></div>
+                <small>Simulated market execution · margin estimates use current replay price</small>
+              </div>
               <div className="deal-buttons">
-                <button className="sell" onClick={() => place("sell")}>SELL</button>
-                <button className="buy" onClick={() => place("buy")}>BUY</button>
+                <button className="sell" aria-label={"Sell " + lots + " lots"} onClick={() => place("sell")}>
+                  <span>SELL MARKET</span><strong>{quote(currentCandle.close, instrument).bid.toFixed(instrument.digits ?? 2)}</strong>
+                </button>
+                <button className="buy" aria-label={"Buy " + lots + " lots"} onClick={() => place("buy")}>
+                  <span>BUY MARKET</span><strong>{quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</strong>
+                </button>
               </div>
 
               <div className={"account-metrics " + (marginWarning ? "warning" : "")}>
@@ -965,37 +987,36 @@ export default function App() {
                 chartPrice={currentCandle.close} update={updateInstrument} />
 
               {supabaseConfigured && !session && (
-                <details>
-                  <summary>Supabase sign in</summary>
-                  <label>Email<input value={email} onChange={(e) => setEmail(e.target.value)} /></label>
-                  <label>Password<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></label>
-                  <div className="split">
-                    <button className="ghost" onClick={() => auth("signin")}>Sign in</button>
-                    <button className="ghost" onClick={() => auth("signup")}>Sign up</button>
-                  </div>
-                </details>
+                <button className="ghost full cloud-ticket-button" onClick={() => setOpenPanel("library")}>
+                  Sync your backtests with Supabase →
+                </button>
               )}
-              {session && cloudProgress && <small className="cloud-progress">{cloudProgress}</small>}
             </aside>
           </section>
 
-          <section className="blotter">
-            <div className="tabs">
-              <strong>Open positions ({account.positions.length})</strong>
-              <span>Closed ({account.history.length})</span>
+          <section className="blotter" aria-label="Trading positions and closed trades">
+            <div className="tabs" role="tablist" aria-label="Trade history">
+              <button className={blotterTab === "open" ? "selected" : ""} role="tab"
+                aria-selected={blotterTab === "open"} onClick={() => setBlotterTab("open")}>
+                Open positions <span>{account.positions.length}</span>
+              </button>
+              <button className={blotterTab === "closed" ? "selected" : ""} role="tab"
+                aria-selected={blotterTab === "closed"} onClick={() => setBlotterTab("closed")}>
+                Closed trades <span>{account.history.length}</span>
+              </button>
+              <span className="tabs-context">{accountName} · {instrument.symbol}</span>
             </div>
-            <div className="table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Side</th><th>Lots</th><th>Open time</th><th>Open</th><th>SL</th><th>TP</th><th>P/L</th><th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {!account.positions.length ? (
-                    <tr><td colSpan={8} className="muted">No open positions.</td></tr>
-                  ) : (
-                    account.positions.map((position) => (
+            <div className="table-wrap" role="tabpanel">
+              {blotterTab === "open" ? (
+                <table>
+                  <thead><tr>
+                    <th>Side</th><th>Lots</th><th>Opened (UTC)</th><th>Entry</th>
+                    <th>SL</th><th>TP</th><th>Floating P/L</th><th>Action</th>
+                  </tr></thead>
+                  <tbody>
+                    {!account.positions.length ? (
+                      <tr><td colSpan={8} className="muted">No open positions. Create a simulated order using the Trade ticket.</td></tr>
+                    ) : account.positions.map((position) => (
                       <tr key={position.id}>
                         <td className={position.side}>{position.side.toUpperCase()}</td>
                         <td>{position.lots}</td>
@@ -1003,24 +1024,42 @@ export default function App() {
                         <td>{position.openPrice.toFixed(instrument.digits ?? 2)}</td>
                         <td>{position.stopLoss === undefined ? "—" : position.stopLoss.toFixed(instrument.digits ?? 2)}</td>
                         <td>{position.takeProfit === undefined ? "—" : position.takeProfit.toFixed(instrument.digits ?? 2)}</td>
-                        <td>{money(positionRawPnl(position, currentCandle.close, instrument))}</td>
-                        <td><button className="tiny" onClick={() => close(position.id)}>Close</button></td>
+                        <td className={positionRawPnl(position,currentCandle.close,instrument) < 0 ? "negative" : "positive"}>
+                          {money(positionRawPnl(position, currentCandle.close, instrument) + (position.swapAccrued ?? 0))}
+                        </td>
+                        <td><button className="tiny" onClick={() => close(position.id)}>Close order</button></td>
                       </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <table>
+                  <thead><tr>
+                    <th>Side</th><th>Lots</th><th>Opened (UTC)</th><th>Closed (UTC)</th>
+                    <th>Entry</th><th>Exit</th><th>Reason</th><th>Net P/L</th>
+                  </tr></thead>
+                  <tbody>
+                    {!account.history.length ? (
+                      <tr><td colSpan={8} className="muted">No closed trades yet. Your complete history will appear here.</td></tr>
+                    ) : account.history.map((trade) => (
+                      <tr key={trade.id}>
+                        <td className={trade.side}>{trade.side.toUpperCase()}</td>
+                        <td>{trade.lots}</td>
+                        <td>{dateTime(trade.openTime)}</td>
+                        <td>{dateTime(trade.closeTime)}</td>
+                        <td>{trade.openPrice.toFixed(instrument.digits ?? 2)}</td>
+                        <td>{trade.closePrice?.toFixed(instrument.digits ?? 2) ?? "—"}</td>
+                        <td>{(trade.exitReason ?? "manual").replaceAll("_"," ")}</td>
+                        <td className={(trade.netPnl ?? 0) < 0 ? "negative" : "positive"}>
+                          {money(trade.netPnl ?? 0)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
             </div>
-            {account.history.length > 0 && (
-              <div className="history-strip">
-                {account.history.slice(0, 6).map((trade) => (
-                  <span key={trade.id}>
-                    {trade.side.toUpperCase()} {trade.lots} · {trade.exitReason} · {money(trade.netPnl ?? 0)}
-                  </span>
-                ))}
-              </div>
-            )}
-          </section>
+          </section></section>
         </>
       )}
     </main>
