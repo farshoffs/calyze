@@ -486,9 +486,11 @@ export default function App() {
   snapshotRef.current = currentSnapshot;
 
   const captureSnapshot = useCallback((): SaveStateSnapshot | null => {
+    if (seekingRef.current) return null; // never persist an in-progress seek
     const snapshot = snapshotRef.current;
     if (!snapshot) return null;
     return { ...snapshot,
+      replayLedger: ledgerRef.current?.exportSave(),
       drawings: readStoredDrawings(ownerId, snapshot.dataset.name, snapshot.instrument.symbol),
       savedAt: new Date().toISOString()
     };
@@ -648,6 +650,7 @@ export default function App() {
       setDatasetName(saved.dataset.name);
       if (!loadedIdentity) throw new Error("No source dataset available for restore.");
       setDatasetIdentity({ ...loadedIdentity, cloudDatasetId: saved.dataset.cloudDatasetId || loadedIdentity.cloudDatasetId });
+      ledgerRef.current = ReplayLedger.fromSave(correctIndex, saved.account, saved.replayLedger);
       setReplayIndex(correctIndex);
       setTimeframe(saved.timeframe);
       setSpeed(saved.speed);
@@ -695,19 +698,28 @@ export default function App() {
       "Start another simulated account at this candle? Save the current account as a named slot first."
     )) return;
     setPlaying(false);
-    setAccount(initialAccount(accountConfig));
+    const nextAccount = initialAccount(accountConfig);
+    ledgerRef.current?.reset(replayIndex, nextAccount);
+    setAccount(nextAccount);
     setAccountName("Account " + Math.floor(Date.now() / 1000).toString().slice(-5));
     setSaveStatus("New trading account started. Use Save now to preserve it separately.");
   }
 
-  const updateAccount = (key: keyof AccountConfig, value: string) =>
+  const updateAccount = (key: keyof AccountConfig, value: string) => {
+    if (account.positions.length) {
+      setStatus("Close the open position before changing leverage or account settings.");
+      return;
+    }
+    ledgerRef.current?.reset(replayIndex, account);
     setAccountConfig((prev) => ({ ...prev, [key]: key === "currency" ? value : Number(value) }));
+  };
 
   const updateInstrument = (key: keyof InstrumentSpec, value: string) => {
     if (account.positions.length) {
       setStatus("Close all trades before changing instrument contract or execution assumptions.");
       return;
     }
+    ledgerRef.current?.reset(replayIndex, account);
     setInstrument((prev) => ({
       ...prev,
       [key]: key === "symbol" ? value
@@ -909,22 +921,16 @@ export default function App() {
                   </div>
                   <div className="replay-controls" aria-label="Replay controls">
                     <button title="Restart from first candle in 2026" aria-label="Restart replay"
-                      onClick={() => { if (confirmSeek()) jumpToStart(); }}>↤</button>
+                      disabled={seeking} onClick={jumpToStart}>↤</button>
                     <button title="Previous M1 candle" aria-label="Previous candle"
-                      disabled={replayIndex <= 0} onClick={() => {
-                        if (!account.positions.length && !account.history.length) {
-                          setPlaying(false);
-                          setReplayIndex((index) => Math.max(0, index - 1));
-                        } else {
-                          applySeek(replayIndex - 1);
-                        }
-                      }}>‹</button>
+                      disabled={replayIndex <= 0} disabled={seeking || replayIndex <= 0}
+                      onClick={() => applySeek(replayIndex - 1)}>‹</button>
                     <button className="play" aria-label={playing ? "Pause replay" : "Play replay"}
-                      aria-pressed={playing} onClick={() => setPlaying((value) => !value)}>
+                      aria-pressed={playing} disabled={seeking} onClick={() => setPlaying((value) => !value)}>
                       {playing ? "Ⅱ Pause" : "▶ Play"}
                     </button>
                     <button title="Next M1 candle" aria-label="Next candle" onClick={stepOnce}
-                      disabled={replayIndex >= baseCandles.length - 1}>›</button>
+                      disabled={seeking || replayIndex >= baseCandles.length - 1}>›</button>
                     <label className="speed-select" title="Replay speed">
                       <span>Speed</span>
                       <select value={speed} aria-label="Replay speed"
@@ -946,13 +952,14 @@ export default function App() {
                       onChange={(event) => jumpToDate(event.target.value)} />
                   </label>
                   <label className="timeline-seek">
-                    <span>Timeline</span>
+                    <span>{seekTarget === replayIndex ? "Timeline" : "Preview " +
+                      new Date(baseCandles[seekTarget].time * 1000).toISOString().slice(0, 16).replace("T", " ")}</span>
                     <input type="range" min="0" max={baseCandles.length - 1}
                       aria-label="Preview historical candle position" value={seekTarget}
                       onChange={(event) => setSeekTarget(Number(event.target.value))} />
                   </label>
                   <button className="timeline-apply" onClick={() => applySeek(seekTarget)}
-                    disabled={seekTarget === replayIndex}>Go</button>
+                    disabled={seeking || seekTarget === replayIndex}>{seeking ? "Moving…" : "Go"}</button>
                   <time className="clock" dateTime={new Date(currentTime * 1000).toISOString()}>
                     {dateTime(currentTime)} UTC
                   </time>
@@ -1004,10 +1011,10 @@ export default function App() {
                 <small>Simulated market execution · margin estimates use current replay price</small>
               </div>
               <div className="deal-buttons">
-                <button className="sell" aria-label={"Sell " + lots + " lots"} onClick={() => place("sell")}>
+                <button className="sell" disabled={seeking} aria-label={"Sell " + lots + " lots"} onClick={() => place("sell")}>
                   <span>SELL MARKET</span><strong>{quote(currentCandle.close, instrument).bid.toFixed(instrument.digits ?? 2)}</strong>
                 </button>
-                <button className="buy" aria-label={"Buy " + lots + " lots"} onClick={() => place("buy")}>
+                <button className="buy" disabled={seeking} aria-label={"Buy " + lots + " lots"} onClick={() => place("buy")}>
                   <span>BUY MARKET</span><strong>{quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</strong>
                 </button>
               </div>
@@ -1084,7 +1091,7 @@ export default function App() {
                         <td className={positionRawPnl(position,currentCandle.close,instrument) < 0 ? "negative" : "positive"}>
                           {money(positionRawPnl(position, currentCandle.close, instrument) + (position.swapAccrued ?? 0))}
                         </td>
-                        <td><button className="tiny" onClick={() => close(position.id)}>Close order</button></td>
+                        <td><button className="tiny" disabled={seeking} onClick={() => close(position.id)}>Close order</button></td>
                       </tr>
                     ))}
                   </tbody>
