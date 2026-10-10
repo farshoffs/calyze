@@ -97,6 +97,7 @@ export default function App() {
   const [drawingGeneration, setDrawingGeneration] = useState(0);
   const snapshotRef = useRef<SaveStateSnapshot | null>(null);
   const cloudSavingRef = useRef(false);
+  const cloudQueueRef = useRef<SaveSlot[]>([]);
   const restoringRef = useRef(false);
   const autosaveIdRef = useRef<string | null>(null);
   const ownerId = session?.user.id ?? "guest";
@@ -310,9 +311,10 @@ export default function App() {
         }
       });
       savedFileRef.current = file;
-      setDatasetIdentity((previous) => previous ? {
-        ...previous, cloudDatasetId: id
-      } : previous);
+      setDatasetIdentity((previous) =>
+        previous && previous.fileName === file.name && previous.sizeBytes === file.size
+          ? { ...previous, cloudDatasetId: id }
+          : previous);
       setCloudProgress("Saved to Supabase successfully · " + id.slice(0, 8) +
         ". Available when you sign in on another device.");
       await refreshCloud();
@@ -440,11 +442,24 @@ export default function App() {
       return;
     }
 
-    if (session?.user.id && slot.snapshot.dataset.cloudDatasetId && !cloudSavingRef.current) {
+    if (session?.user.id && slot.snapshot.dataset.cloudDatasetId) {
+      if (cloudSavingRef.current) {
+        if (kind === "manual") {
+          cloudQueueRef.current.push(slot);
+          setSaveStatus("Saved locally; cloud backup queued behind the current sync.");
+        }
+        return;
+      }
       cloudSavingRef.current = true;
       try {
         await saveCloudState(session.user.id, slot);
-        if (kind === "manual") setSaveStatus("Saved on this device AND Supabase.");
+        while (cloudQueueRef.current.length) {
+          const pending = cloudQueueRef.current.shift()!;
+          await saveCloudState(session.user.id, pending);
+        }
+        if (kind === "manual" || cloudQueueRef.current.length === 0) {
+          setSaveStatus("Backtest state synced to this device and Supabase.");
+        }
       } catch (error) {
         setSaveStatus("Saved on device, but Supabase sync failed: " +
           (error instanceof Error ? error.message : String(error)));
@@ -527,8 +542,11 @@ export default function App() {
         if (!source) throw new Error("The saved source CSV is not available in your Supabase library.");
         const file = await downloadCsvArchive(source, (done, total) =>
           setSaveStatus("Downloading source CSV: " + Math.round(100 * done / total) + "%"));
-        const parsed = await onImport(file, false);
-        if (!parsed) throw new Error("CSV re-import failed. Saved account state was not applied.");
+        // Parse without modifying the current account or loaded dataset. Validation
+        // must complete before the state transition, or an invalid source would
+        // destructively reset an ongoing backtest.
+        const parsed = await parseCtraderCsv(file, (progress) =>
+          setSaveStatus("Reading restored M1 data: " + Math.round(100 * progress.fraction) + "%"));
         candles = parsed;
         loadedIdentity = makeDatasetIdentity(file, parsed, saved.dataset.name, sourceId);
       }
@@ -542,6 +560,12 @@ export default function App() {
         throw new Error("Saved replay candle is absent from this dataset. Account state left unchanged.");
       }
 
+      // All checks passed. Swap source candles and ledger together; no future-price
+      // replay steps are executed while changing the save slot.
+      if (candles !== baseCandles) {
+        setBaseCandles(candles);
+        setPendingFile(null);
+      }
       // Make drawing snapshot available before remounting TradingChart.
       restoreStoredDrawings(ownerId, saved.dataset.name, saved.instrument.symbol, saved.drawings);
       setDatasetName(saved.dataset.name);
