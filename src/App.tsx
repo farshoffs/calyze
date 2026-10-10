@@ -509,6 +509,7 @@ export default function App() {
                 </div>
               </div>
               <TradingChart candles={visibleAggregated} symbol={instrument.symbol}
+                tickSize={instrument.tickSize} priceDigits={instrument.digits ?? 2}
                 workspaceKey={datasetName + ":" + instrument.symbol} userId={session?.user.id} />
             </div>
 
