@@ -83,6 +83,7 @@ export default function App() {
   const [session, setSession] = useState<Session | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [authFeedback, setAuthFeedback] = useState("");
   const [cloudProgress, setCloudProgress] = useState("");
   const [pendingFile, setPendingFile] = useState<File | null>(null);
   const [cloudDatasets, setCloudDatasets] = useState<CloudDataset[]>([]);
@@ -246,6 +247,11 @@ export default function App() {
     setAccount(initialAccount(accountConfig));
   }
 
+  function confirmReplaceDataset(): boolean {
+    if (!account.positions.length && !account.history.length) return true;
+    return window.confirm("Opening a different CSV resets the current trading account. Save this session first?");
+  }
+
   function confirmSeek(): boolean {
     if (!account.positions.length && !account.history.length) return true;
     return window.confirm("Jumping through history resets the simulated account and trade history. Save a checkpoint before continuing?");
@@ -301,11 +307,16 @@ export default function App() {
 
   async function auth(mode: "signin" | "signup") {
     if (!supabase) return;
+    setAuthFeedback("Connecting…");
     const result =
       mode === "signin"
         ? await supabase.auth.signInWithPassword({ email, password })
         : await supabase.auth.signUp({ email, password });
-    setStatus(result.error ? result.error.message : mode === "signin" ? "Signed in." : "Account created.");
+    const message = result.error ? result.error.message : mode === "signin"
+      ? "Signed in. Your cloud library is ready."
+      : "Account created. Verify your email if confirmation is enabled.";
+    setAuthFeedback(message);
+    setStatus(message);
   }
 
   const refreshCloud = useCallback(async () => {
@@ -393,7 +404,10 @@ export default function App() {
       setInstrument(spec);
       setLots(spec.minLot);
       setCloudProgress("Restored " + dataset.name + " from Supabase.");
+      setOpenPanel(null);
+      setMobileView("chart");
     } catch (error) {
+      setStatus("Could not open cloud dataset. Check the Cloud & datasets panel.");
       setCloudProgress("Failed to open cloud dataset: " +
         (error instanceof Error ? error.message : String(error)));
     } finally {
@@ -696,13 +710,16 @@ export default function App() {
           <button className="header-action" onClick={() => setOpenPanel("library")}
             title="Supabase cloud library and authentication">
             <span className={"sync-indicator " + (session ? "online" : "")} aria-hidden="true" />
-            {session ? "Library" : "Cloud"}
+            {cloudBusy ? "Syncing" : session ? "Library" : "Cloud"}
           </button>
         </nav>
         <input ref={fileRef} hidden type="file" accept=".csv,text/csv"
           onChange={(event) => {
             const file = event.target.files?.[0];
-            if (file) void onImport(file);
+            if (file && confirmReplaceDataset()) {
+              setOpenPanel(null);
+              void onImport(file);
+            }
             event.target.value = "";
           }} />
       </header>
@@ -791,7 +808,7 @@ export default function App() {
               <div className="library-dataset-list">
                 {cloudDatasets.map((dataset) => (
                   <button key={dataset.id} className="library-dataset" disabled={cloudBusy}
-                    onClick={() => { setOpenPanel(null); void openCloudDataset(dataset); }}>
+                    onClick={() => { if (confirmReplaceDataset()) void openCloudDataset(dataset); }}>
                     <span className="library-dataset-icon">▤</span>
                     <span className="library-dataset-text">
                       <strong>{dataset.symbol} · {dataset.name}</strong>
@@ -817,6 +834,7 @@ export default function App() {
                 <button className="primary" onClick={() => void auth("signin")}>Sign in</button>
                 <button onClick={() => void auth("signup")}>Create account</button>
               </div>
+              {authFeedback && <p className="drawer-progress" role="status">{authFeedback}</p>}
             </div>
           )}
           {cloudProgress && <p className="drawer-progress" role="status">{cloudProgress}</p>}
@@ -961,6 +979,13 @@ export default function App() {
                   <span>BUY MARKET</span><strong>{quote(currentCandle.close, instrument).ask.toFixed(instrument.digits ?? 2)}</strong>
                 </button>
               </div>
+
+              <button className="view-open-orders" onClick={() => {
+                setBlotterTab("open");
+                setMobileView("history");
+              }}>
+                View open positions ({account.positions.length}) →
+              </button>
 
               <div className={"account-metrics " + (marginWarning ? "warning" : "")}>
                 <Metric label="Balance" value={money(accountMetrics.balance)} />
