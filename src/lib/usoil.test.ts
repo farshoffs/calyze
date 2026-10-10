@@ -72,9 +72,9 @@ describe("USOIL.S broker specification (user-provided)", () => {
 
   it("uses modeled ASK high for sell-stop execution", () => {
     const state = openPosition(initialAccount(config), "sell", 0.1, 89.38, 1,
-      config, USOIL_S, 89.55).state;
+      config, USOIL_S, 89.57).state;
     const after = advanceAccount(state, {
-      time: 120, open: 89.38, high: 89.53, low: 89.35, close: 89.4, volume: 1
+      time: 120, open: 89.38, high: 89.55, low: 89.35, close: 89.4, volume: 1
     }, config, USOIL_S);
     expect(after.history[0]?.exitReason).toBe("stop_loss");
   });
