@@ -171,3 +171,100 @@ td.sell { background: transparent; color: #f87171; }
   .auth-banner input { flex: 1; min-width: 120px; width: 30%; }
   .replay-seek { width: 88px; }
 }
+
+/* Calyze drawing workspace: compact vertical dock and editable anchored SVG layer. */
+.calyze-chart-workspace { min-height: 0; }
+.calyze-chart-workspace .chart-toolbar { flex-shrink: 0; min-height: 35px; white-space: nowrap; }
+.calyze-chart-workspace .chart-toolbar > span { font-size: 11px; color: #8797ad; }
+.calyze-chart-workspace .chart-toolbar .drawing-sync {
+  max-width: 230px; overflow: hidden; text-overflow: ellipsis; color: #60a5fa;
+}
+.drawing-chart-layout { flex: 1; display: flex; min-height: 0; min-width: 0; }
+.drawing-rail {
+  display: flex; flex-direction: column; align-items: center; gap: 5px;
+  width: 44px; flex: 0 0 44px; background: #101721;
+  border-right: 1px solid #253142; padding: 8px 3px;
+}
+.drawing-rail button {
+  display: grid; place-items: center; border: 1px solid transparent;
+  width: 36px; height: 36px; background: transparent; border-radius: 7px;
+  color: #aebacf; font-weight: 700; font-size: 20px; padding: 0;
+}
+.drawing-rail button:hover { background: #1d2938; }
+.drawing-rail button.active { background: #193454; border-color: #3b82f6; color: #93c5fd; }
+.drawing-rail-separator { width: 25px; height: 1px; background: #2f3c4e; margin: 5px 0; }
+.drawing-stage { flex: 1; min-width: 0; min-height: 250px; position: relative; overflow: hidden; }
+.calyze-chart-workspace .chart-host { position: absolute; inset: 0; width: 100%; height: 100%; min-height: 0; }
+.drawing-overlay {
+  position: absolute; inset: 0; width: 100%; height: 100%;
+  overflow: hidden; z-index: 2; pointer-events: none;
+}
+.drawing-overlay.drawing-mode { pointer-events: auto; cursor: crosshair; touch-action: none; }
+.drawing-tool-menu {
+  position: absolute; z-index: 5; left: 10px; top: 8px;
+  width: 234px; max-height: min(430px, calc(100% - 16px)); overflow-y: auto;
+  padding: 6px; border-radius: 9px; border: 1px solid #35445b;
+  background: #151d29; box-shadow: 0 12px 45px rgba(0,0,0,.65);
+}
+.drawing-menu-heading {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 7px 8px 9px; color: #e2ebf9; font-size: 12px;
+}
+.drawing-menu-heading button { border: 0; background: none; font-size: 19px; padding: 0 5px; }
+.drawing-tool-menu > button {
+  display: flex; align-items: center; gap: 8px; width: 100%; text-align: left;
+  background: transparent; border: 0; padding: 9px 8px; border-radius: 6px;
+  color: #ced9e7; font-size: 12px;
+}
+.drawing-tool-menu > button:hover,
+.drawing-tool-menu > button.active { background: #253952; }
+.drawing-tool-menu .tool-glyph {
+  display: inline-flex; width: 26px; justify-content: center;
+  color: #93c5fd; font-weight: 700; font-size: 17px;
+}
+.drawing-tool-menu small { margin-left: auto; color: #8190a7; font-size: 10px; }
+.drawing-hint {
+  position: absolute; z-index: 3; bottom: 13px; left: 50%;
+  transform: translateX(-50%); background: rgba(22,32,45,.94);
+  border: 1px solid #385070; padding: 7px 11px; border-radius: 7px;
+  font-size: 11px; color: #bfdbfe; text-align: center; pointer-events: none;
+  white-space: nowrap;
+}
+.drawing-properties {
+  position: absolute; z-index: 4; left: 50%; top: 8px;
+  transform: translateX(-50%); display: flex; align-items: center; gap: 5px;
+  max-width: calc(100% - 20px); overflow-x: auto;
+  padding: 5px 8px; border: 1px solid #33445d; border-radius: 8px;
+  background: #161e2b; box-shadow: 0 8px 20px #0008; white-space: nowrap;
+}
+.drawing-properties strong { font-size: 11px; margin-right: 5px; }
+.drawing-properties input[type=color] { padding: 0; height: 27px; min-width: 30px; width: 30px; }
+.drawing-properties button, .drawing-properties select { padding: 5px; font-size: 11px; }
+.drawing-show-hidden {
+  position: absolute; z-index: 3; bottom: 12px; right: 15px;
+  background: rgba(22,32,45,.94); font-size: 11px;
+}
+.drawing-bottom-bar {
+  display: flex; flex-shrink: 0; gap: 8px; align-items: center;
+  min-height: 32px; border-top: 1px solid #28364a; background: #111720;
+  padding: 4px 10px 4px 48px; overflow-x: auto;
+}
+.drawing-bottom-bar > select { font-size: 11px; padding: 3px 5px; }
+.drawing-bottom-bar > span { color: #61738a; font-size: 10px; margin-left: auto; white-space: nowrap; }
+.drawing-palette { display: flex; align-items: center; gap: 5px; }
+.drawing-palette button {
+  width: 16px; height: 16px; border-radius: 50%; border: 1px solid #374151; padding: 0;
+}
+.drawing-palette button.active { outline: 2px solid #f8fafc; outline-offset: 2px; }
+.drawing-palette input[type=color] { padding: 0; height: 21px; width: 26px; background: transparent; border: none; }
+.jump-date-control { display: flex; gap: 5px; align-items: center; font-size: 11px; color: #9aacc4; }
+.jump-date-control input[type=date] { padding: 3px 6px; font-size: 11px; color-scheme: dark; max-width: 136px; }
+@media (max-width: 650px) {
+  .drawing-rail { width: 39px; flex-basis: 39px; }
+  .drawing-rail button { width: 34px; height: 34px; }
+  .drawing-bottom-bar { padding-left: 7px; }
+  .drawing-bottom-bar > span { display: none; }
+  .drawing-properties { left: 4px; right: 4px; transform: none; }
+  .drawing-tool-menu { left: 3px; }
+  .jump-date-control input[type=date] { max-width: 125px; }
+}
