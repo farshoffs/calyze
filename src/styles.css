@@ -268,3 +268,59 @@ td.sell { background: transparent; color: #f87171; }
   .drawing-tool-menu { left: 3px; }
   .jump-date-control input[type=date] { max-width: 125px; }
 }
+
+/* Broker instrument specification viewer for backtesting */
+.spec-card {
+  margin-top: 12px;
+  border: 1px solid #2b3b50;
+  border-radius: 10px;
+  padding: 10px;
+  background: #101a27;
+}
+.spec-card > summary {
+  margin: 0;
+  padding: 2px 0 10px;
+  font-weight: 600;
+  color: #d1e4ff;
+}
+.spec-card .spec-list {
+  display: grid;
+  gap: 0;
+  border-top: 1px solid #2b3b50;
+}
+.spec-card h4 {
+  color: #f1f5f9;
+  font-size: 12px;
+  margin: 14px 0 6px;
+}
+.spec-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  min-width: 0;
+  border-bottom: 1px solid #1b2939;
+  padding: 6px 0;
+  font-size: 11px;
+}
+.spec-row span { color: #b1bfd1; }
+.spec-row strong {
+  color: #f2f4f8;
+  font-weight: 500;
+  text-align: right;
+}
+.spec-note {
+  font-size: 11px;
+  line-height: 1.5;
+  color: #93a3bb;
+  margin: 7px 0 12px;
+}
+.quote-card .quote-ask {
+  color: #fbbf24;
+  font-size: 11px;
+  margin-top: 5px;
+}
+.spec-card .settings-grid label {
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
