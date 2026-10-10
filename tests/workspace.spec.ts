@@ -18,7 +18,7 @@ test("workspace drawers, CSV import and manual trading remain usable", async ({ 
   const failures: string[] = [];
   page.on("pageerror", (error) => failures.push(error.message));
   await page.goto("/calyze/");
-  await expect(page.getByText("Calyze", { exact: true }).first()).toBeVisible();
+  await expect(page.locator(".topbar .brand-mark")).toBeVisible();
 
   await page.locator(".top-actions .header-action").nth(1).click();
   await expect(page.getByRole("dialog", { name: "Save states" })).toBeVisible();
