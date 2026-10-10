@@ -113,7 +113,7 @@ describe("ReplayLedger backward/forward navigation", () => {
       if (i === 3000) longBars[i].low = 89.10;
     }
     const ledger = new ReplayLedger(0, initialAccount(cfg));
-    buy(ledger,89.20);
+    buy(ledger,89.10);
     const messages: number[] = [];
     await ledger.seek(4900,longBars,cfg,USOIL_S,(done) => messages.push(done));
     expect(ledger.account.history[0]?.exitReason).toBe("stop_loss");
